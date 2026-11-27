@@ -29,6 +29,67 @@
     unchanged: a one-step audit row is byte for byte the previous one. The Task
     parameter commitment changes because it frames every field. Two new store
     prefixes inside the Task store (the sampling queue); no store key change.
+- **Two-step sampling: fixes after the release-candidate audit.**
+  - The chain gives its own position draw a grace of 256 blocks
+    (`AnchorPositionDrawGraceBlocks`, a protocol constant). The verdict deadline
+    written at selection is now `list deadline + beacon blocks + 256 + opening +
+    proof + verdict windows`, and the draw is made as long as the three full
+    windows still end by it. A list recorded in the last block of the list
+    window no longer ends NO_VERDICT after one block of EndBlock delay or one
+    restarted beacon window. No window of the Worker is shortened; the list
+    deadline is unchanged; audits selected before the change keep the deadline
+    they carry.
+  - Parameter validation now compares the task retention
+    (`cleanup.task_terminal_summary_retention_blocks`) with the real longest
+    life of an audit: list window + beacon blocks + 256 + opening + proof +
+    verdict windows, where the list window and beacon blocks are the configured
+    ones or, when the body carries none, the recommended 1,800 + 8 that a task
+    of a two-step Profile then runs on. Before, the fallback windows were not
+    counted. A body recorded under the earlier rule stays valid as history and
+    keeps its commitment; a parameter update or a genesis whose retention is
+    not above the new bound is refused.
+  - `MsgSubmitAnchorCommitmentList` with the recorded hash and size and
+    another `list_uri` now corrects the recorded location (status APPLIED,
+    `EventAnchorCommitmentListRecorded` emitted again with unchanged fields)
+    while the audit has no final verdict: before and after the draw and after
+    the list deadline. The new location must lie under the frozen
+    `da_uri_prefix`. It changes nothing but `commitment_list_uri`. The hash and
+    the size stay final: any other content is refused as before. With the
+    recorded location, or after the verdict is final, the message is a NOOP.
+    Before, a wrong first location could never be corrected.
+  - A missing commitment list on a round that did not pass is applied at the
+    same moment as a missing opening: only by a settlement at or after the
+    verdict deadline. Before, it took the timeout fault from the block after
+    the list deadline, where the one-step counterpart imposes nothing. The
+    audit row still records REJECT / TIMEOUT one block after the list deadline,
+    and a PASS round is decided by it from that block as before.
+  - A chain that stops requiring the VRF beacon after a two-step Profile was
+    registered can make no position draw. Such an audit now ends at its first
+    draw visit as NO_VERDICT (source `TIMEOUT`) with a reason of its own that
+    names `beacon.vrf_required_from_height`, instead of restarting windows
+    until none fits: the Worker is paid, nothing is slashed. A draw whose
+    beacons are verified proposer-VRF values is made as before.
+    `MsgUpdateHubParams` now refuses to set `beacon.vrf_required_from_height`
+    to zero, or above the current height once it has been reached, while a
+    Profile version that is not delisted uses two-step sampling.
+  - `docs/runbooks/anchor_two_step_sampling.md`: the heights of one audit, the
+    longest audit life a Worker's retention must cover, the list message rules,
+    the upgrade, and the stated residual of the position beacon (the last
+    contributing proposers can re-roll the draw by withholding a block, and the
+    Worker chooses which proposers those are) with guidance for
+    `anchor_position_beacon_blocks`. The protocol is not changed for it.
+  - **Upgrade plan `v0.6.4-two-step-sampling`; Task module consensus version
+    4 -> 5.** The Task parameter commitment frames every field, so the fields
+    added since the anchor audit release (18..43) change the hash of an
+    unchanged body: after an in-place upgrade the stored commitment no longer
+    matched, the parameter invariant failed and genesis export was refused until
+    the next governance update. The 4 -> 5 migration writes the live body as a
+    new params version with its commitment and archives the replaced version
+    unchanged (rows bound to it keep reading it). A task retention that is not
+    above the new bound is raised by the migration, with a logged note to
+    confirm by governance. A chain whose commitment already matches is left
+    alone. A genesis exported by the previous binary still carries the old
+    commitment and is not accepted as it is by a cold start of this binary.
 - **Consensus-breaking: anchor audit, material the Worker does not keep
   retrievable.** A validator that cannot obtain the opening, proof or manifest
   a Worker recorded may vote `UNAVAILABLE`.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	errorsmod "cosmossdk.io/errors"
+
 	"github.com/TrueOpen/node/x/hub/types"
 	shared "github.com/TrueOpen/node/x/shared/types"
 )
@@ -47,4 +49,48 @@ func (k Keeper) requireAnchorTwoStepReady(ctx context.Context, schema shared.Evi
 			shared.WorkerAnchorCommitmentSchemaVersionV2)
 	}
 	return nil
+}
+
+// validateVrfRequirementKeptForTwoStep refuses a Hub parameter update that
+// takes the VRF beacon requirement away - beacon.vrf_required_from_height set
+// to zero, or moved above the current height once it has been reached - while
+// a Profile version that is not delisted asks for two-step anchor sampling.
+//
+// The registration guard (requireAnchorTwoStepReady) checks the requirement
+// once, when such a Profile is registered. Without this check a later update
+// could remove it: from then on no position draw can be made and every
+// selected audit of the Profile ends NO_VERDICT - the Workers are paid and no
+// task of the Profile is audited at all. The audit states that outcome with
+// its own reason, but it should not be reachable by an oversight. Governance
+// that does want to drop the requirement delists the two-step Profile
+// versions first.
+//
+// The Profile table is walked only when an update actually removes a reached
+// requirement, which is a rare governance action.
+func (k Keeper) validateVrfRequirementKeptForTwoStep(ctx context.Context, current, next types.HubParamsV2, height uint64) error {
+	reached := func(p types.HubParamsV2) bool {
+		return p.Beacon.VrfRequiredFromHeight != 0 && height >= p.Beacon.VrfRequiredFromHeight
+	}
+	if !reached(current) || reached(next) {
+		return nil
+	}
+	var blocking *types.ProfileState
+	if err := k.Profile.Walk(ctx, nil, func(_ types.ProfileStateKeyPair, profile types.ProfileState) (bool, error) {
+		if profile.Status == types.ModelStatusDelisted {
+			return false, nil
+		}
+		if twoStep, _ := shared.AnchorTwoStepSamplingRequired(profile.VerificationProfile.EvidenceSchema); twoStep {
+			blocking = &profile
+			return true, nil
+		}
+		return false, nil
+	}); err != nil {
+		return err
+	}
+	if blocking == nil {
+		return nil
+	}
+	return errorsmod.Wrapf(types.ErrInvalidBeacon,
+		"beacon.vrf_required_from_height cannot be removed or postponed while a Profile uses two-step anchor sampling (model %x version %d): its position draw needs proposer-VRF beacons; delist such Profile versions first",
+		blocking.ModelId, blocking.ProfileVersion)
 }

@@ -57,6 +57,10 @@ const (
 
 	anchorListMissingReason     = "worker did not post the commitment list before the list deadline"
 	anchorPositionsMissingReson = "the chain did not draw positions for the recorded commitment list"
+	// anchorVRFNotRequiredReason ends a two-step audit on a chain that no
+	// longer (or not yet) requires the proposer-VRF beacon. It is the chain's
+	// own configuration, never the Worker's fault: NO_VERDICT, paid.
+	anchorVRFNotRequiredReason = "the proposer-VRF beacon is not required at this height (beacon.vrf_required_from_height), so two-step sampling cannot draw"
 	// anchorSamplingSweepConservativeBytesV1 is the byte charge of one visited
 	// row of the sampling queue: the audit row, the receipt the row count is
 	// read from, and the beacons of one window.
@@ -119,14 +123,25 @@ func (k Keeper) anchorSamplingModeOf(ctx context.Context, taskKey types.TaskKey)
 // sampling height itself; later only when EndBlock ran late). The verdict
 // deadline is the upper bound over every later step and is never moved, so the
 // settlement index row placed on it stays where it is.
+//
+// The latest height at which the chain still draws is
+//
+//	list deadline + beacon blocks + types.AnchorPositionDrawGraceBlocks
+//
+// and the verdict deadline lies the full opening, proof and verdict windows
+// after it. The grace is the chain's own slack (a late EndBlock visit, a
+// restarted beacon window): a list recorded in the very last block of the list
+// window still has it in full, so the Worker's choice of height cannot leave
+// the draw without room, and no window of the Worker is shortened by it.
 func anchorTwoStepSelection(state *types.AnchorAuditState, v types.VerificationParamsV1, height uint64) bool {
 	listWindow, beaconBlocks := v.AnchorTwoStepWindows()
 	listDeadline, o1 := checkedHeightAdd(height, listWindow)
 	drawBound, o2 := checkedHeightAdd(listDeadline, beaconBlocks)
+	drawBound, o6 := checkedHeightAdd(drawBound, types.AnchorPositionDrawGraceBlocks)
 	openBound, o3 := checkedHeightAdd(drawBound, v.AnchorOpenWindowBlocks)
 	proofBound, o4 := checkedHeightAdd(openBound, v.AnchorProofWindowBlocks)
 	verdictDeadline, o5 := checkedHeightAdd(proofBound, v.AnchorVerdictWindowBlocks)
-	if o1 || o2 || o3 || o4 || o5 {
+	if o1 || o2 || o3 || o4 || o5 || o6 {
 		return false
 	}
 	state.ListDeadlineHeight = listDeadline
@@ -237,9 +252,11 @@ func anchorSamplingDueHeightOf(state types.AnchorAuditState) uint64 {
 
 // SubmitAnchorCommitmentList records the hash of the winner Worker's per-row
 // commitment list for a task that two-step sampling selected. The first
-// accepted message is final: the same hash and size again is a NOOP at any
-// later height, any other content is refused for the rest of the audit. The
-// position draw is bound to the block that includes this message: the
+// accepted hash and size are final: any other content is refused for the rest
+// of the audit. The same hash and size again is a NOOP at any later height
+// when it names the recorded location, and corrects the location (APPLIED)
+// when it names another one while the audit is open. The position draw is
+// bound to the block that includes the first accepted message: the
 // contributing beacons are those of the heights strictly after it.
 func (m msgServer) SubmitAnchorCommitmentList(ctx context.Context, req *types.MsgSubmitAnchorCommitmentList) (*types.MsgSubmitAnchorCommitmentListResponse, error) {
 	if req == nil {
@@ -287,15 +304,41 @@ func (m msgServer) SubmitAnchorCommitmentList(ctx context.Context, req *types.Ms
 	}
 	if anchorListRecorded(state) {
 		// Decided before the deadline and before the final-verdict check, so a
-		// repeated broadcast answers the same at every later stage. The location
-		// of the repetition is not compared and not stored.
-		if bytes.Equal(state.CommitmentListHash, req.ListHash) && state.CommitmentListSizeBytes == req.ListSizeBytes {
+		// repeated broadcast is never an error at any later stage.
+		if !bytes.Equal(state.CommitmentListHash, req.ListHash) || state.CommitmentListSizeBytes != req.ListSizeBytes {
+			return nil, errorsmod.Wrap(types.ErrInvalidAssignment, "anchor commitment list already recorded with a different hash; the first recorded list is final")
+		}
+		answer := func(status shared.MutationStatusV1) *types.MsgSubmitAnchorCommitmentListResponse {
 			return &types.MsgSubmitAnchorCommitmentListResponse{
 				PositionBeaconFirstHeight: state.PositionBeaconFirstHeight, PositionBeaconLastHeight: state.PositionBeaconLastHeight,
-				Status: shared.MutationStatusV1_MUTATION_STATUS_V1_NOOP,
-			}, nil
+				Status: status,
+			}
 		}
-		return nil, errorsmod.Wrap(types.ErrInvalidAssignment, "anchor commitment list already recorded with a different hash; the first recorded list is final")
+		// The same hash and size with another location corrects the location.
+		// What is final is the content: the hash and the size, which alone
+		// enter the position draw. The location only says where the bytes of
+		// that hash are served, and a Worker that recorded a wrong one could
+		// otherwise never make its list retrievable. The correction is open as
+		// long as the audit is: before and after the draw and after the list
+		// deadline (the hash was recorded in time), since a reader checks the
+		// bytes against the hash wherever it fetched them. It moves nothing
+		// else: not the height of the list, not the beacon window, not the
+		// positions. Once the verdict is final the row is a record and the
+		// repetition is a NOOP like an identical one.
+		if req.ListUri == state.CommitmentListUri || state.ResultHeight != 0 {
+			return answer(shared.MutationStatusV1_MUTATION_STATUS_V1_NOOP), nil
+		}
+		if !anchorLocationsUnderPrefix(state, req.ListUri) {
+			return nil, errorsmod.Wrapf(types.ErrInvalidAssignment, "anchor commitment list location must lie under the Worker's published data-availability endpoint %s", state.DaUriPrefix)
+		}
+		state.CommitmentListUri = req.ListUri
+		if err := m.k.AnchorAudit.Set(ctx, taskKey, state); err != nil {
+			return nil, err
+		}
+		if err := emitAnchorListRecordedEvent(ctx, state); err != nil {
+			return nil, err
+		}
+		return answer(shared.MutationStatusV1_MUTATION_STATUS_V1_APPLIED), nil
 	}
 	if state.ResultHeight != 0 {
 		return nil, errorsmod.Wrap(types.ErrInvalidAssignment, "anchor audit verdict is already final")
@@ -381,6 +424,21 @@ func (k Keeper) anchorContributingBeacons(ctx context.Context, first, last uint6
 	return out, true
 }
 
+// anchorVRFBeaconRequired reports whether the chain requires the proposer-VRF
+// beacon at height. known is false when the Hub cannot answer; the caller then
+// keeps restarting windows, which is the behaviour without this fact.
+func (k Keeper) anchorVRFBeaconRequired(ctx context.Context, height uint64) (required, known bool) {
+	reader, ok := k.hubKeeper.(types.BeaconVRFRequirement)
+	if !ok {
+		return false, false
+	}
+	required, err := reader.BeaconSentinelRequiredAtHeight(ctx, height)
+	if err != nil {
+		return false, false
+	}
+	return required, true
+}
+
 // finalizeAnchorSamplingOutcome ends a two-step audit that never reached the
 // draw, in the EndBlock queue: REJECT for the Worker's missing list, NO_VERDICT
 // when the chain could not draw. Settlement applies the consequence.
@@ -461,6 +519,18 @@ func (k Keeper) drawAnchorPositions(ctx context.Context, taskKey types.TaskKey, 
 	}
 	beacons, ok := k.anchorContributingBeacons(ctx, state.PositionBeaconFirstHeight, state.PositionBeaconLastHeight)
 	if !ok {
+		// The Hub admits a two-step Profile only on a chain that requires the
+		// VRF beacon, but governance may remove or postpone that requirement
+		// later (and a genesis may carry such a Profile without it). Blocks
+		// then carry the block-hash placeholder, which is never accepted here,
+		// so no window can be expected to succeed: the audit ends at once with
+		// its own reason instead of restarting windows until none fits. It is
+		// the chain's configuration: NO_VERDICT, the Worker is paid, no fault.
+		if required, known := k.anchorVRFBeaconRequired(ctx, height); known && !required {
+			sdk.UnwrapSDKContext(ctx).Logger().Error("anchor position draw abandoned: the proposer-VRF beacon is not required at this height; every two-step audit ends NO_VERDICT until beacon.vrf_required_from_height is set and reached",
+				"task", fmt.Sprintf("%x", []byte(taskKey)), "height", height)
+			return noDraw(anchorVRFNotRequiredReason)
+		}
 		_, beaconBlocks := v.AnchorTwoStepWindows()
 		first, o3 := checkedHeightAdd(height, 1)
 		last, o4 := checkedHeightAdd(height, beaconBlocks)
