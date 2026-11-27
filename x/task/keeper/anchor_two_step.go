@@ -248,9 +248,11 @@ func anchorSamplingDueHeightOf(state types.AnchorAuditState) uint64 {
 
 // SubmitAnchorCommitmentList records the hash of the winner Worker's per-row
 // commitment list for a task that two-step sampling selected. The first
-// accepted message is final: the same hash and size again is a NOOP at any
-// later height, any other content is refused for the rest of the audit. The
-// position draw is bound to the block that includes this message: the
+// accepted hash and size are final: any other content is refused for the rest
+// of the audit. The same hash and size again is a NOOP at any later height
+// when it names the recorded location, and corrects the location (APPLIED)
+// when it names another one while the audit is open. The position draw is
+// bound to the block that includes the first accepted message: the
 // contributing beacons are those of the heights strictly after it.
 func (m msgServer) SubmitAnchorCommitmentList(ctx context.Context, req *types.MsgSubmitAnchorCommitmentList) (*types.MsgSubmitAnchorCommitmentListResponse, error) {
 	if req == nil {
@@ -298,15 +300,41 @@ func (m msgServer) SubmitAnchorCommitmentList(ctx context.Context, req *types.Ms
 	}
 	if anchorListRecorded(state) {
 		// Decided before the deadline and before the final-verdict check, so a
-		// repeated broadcast answers the same at every later stage. The location
-		// of the repetition is not compared and not stored.
-		if bytes.Equal(state.CommitmentListHash, req.ListHash) && state.CommitmentListSizeBytes == req.ListSizeBytes {
+		// repeated broadcast is never an error at any later stage.
+		if !bytes.Equal(state.CommitmentListHash, req.ListHash) || state.CommitmentListSizeBytes != req.ListSizeBytes {
+			return nil, errorsmod.Wrap(types.ErrInvalidAssignment, "anchor commitment list already recorded with a different hash; the first recorded list is final")
+		}
+		answer := func(status shared.MutationStatusV1) *types.MsgSubmitAnchorCommitmentListResponse {
 			return &types.MsgSubmitAnchorCommitmentListResponse{
 				PositionBeaconFirstHeight: state.PositionBeaconFirstHeight, PositionBeaconLastHeight: state.PositionBeaconLastHeight,
-				Status: shared.MutationStatusV1_MUTATION_STATUS_V1_NOOP,
-			}, nil
+				Status: status,
+			}
 		}
-		return nil, errorsmod.Wrap(types.ErrInvalidAssignment, "anchor commitment list already recorded with a different hash; the first recorded list is final")
+		// The same hash and size with another location corrects the location.
+		// What is final is the content: the hash and the size, which alone
+		// enter the position draw. The location only says where the bytes of
+		// that hash are served, and a Worker that recorded a wrong one could
+		// otherwise never make its list retrievable. The correction is open as
+		// long as the audit is: before and after the draw and after the list
+		// deadline (the hash was recorded in time), since a reader checks the
+		// bytes against the hash wherever it fetched them. It moves nothing
+		// else: not the height of the list, not the beacon window, not the
+		// positions. Once the verdict is final the row is a record and the
+		// repetition is a NOOP like an identical one.
+		if req.ListUri == state.CommitmentListUri || state.ResultHeight != 0 {
+			return answer(shared.MutationStatusV1_MUTATION_STATUS_V1_NOOP), nil
+		}
+		if !anchorLocationsUnderPrefix(state, req.ListUri) {
+			return nil, errorsmod.Wrapf(types.ErrInvalidAssignment, "anchor commitment list location must lie under the Worker's published data-availability endpoint %s", state.DaUriPrefix)
+		}
+		state.CommitmentListUri = req.ListUri
+		if err := m.k.AnchorAudit.Set(ctx, taskKey, state); err != nil {
+			return nil, err
+		}
+		if err := emitAnchorListRecordedEvent(ctx, state); err != nil {
+			return nil, err
+		}
+		return answer(shared.MutationStatusV1_MUTATION_STATUS_V1_APPLIED), nil
 	}
 	if state.ResultHeight != 0 {
 		return nil, errorsmod.Wrap(types.ErrInvalidAssignment, "anchor audit verdict is already final")

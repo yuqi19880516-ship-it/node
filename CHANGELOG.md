@@ -48,6 +48,15 @@
     counted. A body recorded under the earlier rule stays valid as history and
     keeps its commitment; a parameter update or a genesis whose retention is
     not above the new bound is refused.
+  - `MsgSubmitAnchorCommitmentList` with the recorded hash and size and
+    another `list_uri` now corrects the recorded location (status APPLIED,
+    `EventAnchorCommitmentListRecorded` emitted again with unchanged fields)
+    while the audit has no final verdict: before and after the draw and after
+    the list deadline. The new location must lie under the frozen
+    `da_uri_prefix`. It changes nothing but `commitment_list_uri`. The hash and
+    the size stay final: any other content is refused as before. With the
+    recorded location, or after the verdict is final, the message is a NOOP.
+    Before, a wrong first location could never be corrected.
   - **Upgrade plan `v0.6.4-two-step-sampling`; Task module consensus version
     4 -> 5.** The Task parameter commitment frames every field, so the fields
     added since the anchor audit release (18..43) change the hash of an

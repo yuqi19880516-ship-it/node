@@ -3,8 +3,10 @@ package keeper
 import (
 	"testing"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 
+	shared "github.com/TrueOpen/node/x/shared/types"
 	"github.com/TrueOpen/node/x/task/types"
 )
 
@@ -211,4 +213,138 @@ func TestAuditF_RetentionBoundEqualsTheWrittenAuditLife(t *testing.T) {
 		require.NoError(t, f.params.Validate())
 		require.Less(t, state.VerdictDeadlineHeight-selection, f.params.Cleanup.TaskTerminalSummaryRetentionBlocks)
 	}
+}
+
+// CH-5. A wrong first list location could not be corrected: a repetition with
+// another URL was a NOOP and the stored URL stayed (the audit's reproduction
+// TestAuditF_ListLocationCannotBeCorrected). The selected Worker can now
+// correct the location with the same message, the same hash and the same
+// size. Nothing else of the audit moves.
+func TestAuditF_ListLocationCanBeCorrected(t *testing.T) {
+	f := newTwoStepFixture(t, 0)
+	state := f.selected(t)
+	recorded := f.postList(t, state.SampleHeight+1)
+	require.Equal(t, "https://da.example/list", recorded.CommitmentListUri)
+
+	msg := f.listMsg(0x1a)
+	msg.ListUri = "https://da.example/corrected"
+	ctx := sdk.UnwrapSDKContext(f.at(int64(state.SampleHeight + 2))).WithEventManager(sdk.NewEventManager())
+	resp, err := f.server.SubmitAnchorCommitmentList(ctx, msg)
+	require.NoError(t, err)
+	require.Equal(t, shared.MutationStatusV1_MUTATION_STATUS_V1_APPLIED, resp.Status)
+	require.Equal(t, recorded.PositionBeaconFirstHeight, resp.PositionBeaconFirstHeight)
+	require.Equal(t, recorded.PositionBeaconLastHeight, resp.PositionBeaconLastHeight)
+	want := recorded
+	want.CommitmentListUri = "https://da.example/corrected"
+	require.Equal(t, want, f.audit(t), "only the location changes: not the hash, the size, the list height or the beacon window")
+	due, queued := f.dueHeight(t)
+	require.True(t, queued)
+	require.Equal(t, recorded.PositionBeaconLastHeight, due, "the draw stays where the first message put it")
+	var events int
+	for _, e := range ctx.EventManager().Events() {
+		if e.Type == "task.v1.EventAnchorCommitmentListRecorded" {
+			events++
+		}
+	}
+	require.Equal(t, 1, events, "a correction that changes the row is announced")
+
+	// The corrected location again is a NOOP.
+	resp, err = f.server.SubmitAnchorCommitmentList(f.at(int64(state.SampleHeight+3)), msg)
+	require.NoError(t, err)
+	require.Equal(t, shared.MutationStatusV1_MUTATION_STATUS_V1_NOOP, resp.Status)
+
+	// The positions do not depend on the location.
+	other := newTwoStepFixture(t, 0)
+	otherState := other.selected(t)
+	plain := other.drawn(t, otherState.SampleHeight+1)
+	require.Equal(t, uint64(1), f.sweep(t, recorded.PositionBeaconLastHeight))
+	require.Equal(t, plain.Positions, f.audit(t).Positions)
+	require.Equal(t, plain.PositionBeacon, f.audit(t).PositionBeacon)
+}
+
+// CH-5. The correction is open as long as the audit is: after the draw and
+// after the list deadline too. A different hash or size stays refused exactly
+// as before, at every stage; so do another signer and a location outside the
+// frozen data-availability prefix. After the verdict is final the row is a
+// record: the message is a NOOP and the location stays.
+func TestAuditF_ListLocationCorrectionRules(t *testing.T) {
+	f := newTwoStepFixture(t, 0)
+	state := f.selected(t)
+	*f.hub.endpoint = "https://da.example/"
+	state.DaUriPrefix = "https://da.example/"
+	require.NoError(t, f.keeper.AnchorAudit.Set(f.ctx, f.taskKey, state))
+	recorded := f.postList(t, state.SampleHeight+1)
+
+	correct := func(height uint64, uri string, mutate func(*types.MsgSubmitAnchorCommitmentList)) (*types.MsgSubmitAnchorCommitmentListResponse, error) {
+		msg := f.listMsg(0x1a)
+		msg.ListUri = uri
+		if mutate != nil {
+			mutate(msg)
+		}
+		return f.server.SubmitAnchorCommitmentList(f.at(int64(height)), msg)
+	}
+	refused := func(height uint64) {
+		t.Helper()
+		before := f.audit(t)
+		_, err := correct(height, "https://da.example/x", func(m *types.MsgSubmitAnchorCommitmentList) { m.ListHash = bytes32(0x2b) })
+		require.ErrorContains(t, err, "first recorded list is final", "a different hash")
+		_, err = correct(height, "https://da.example/x", func(m *types.MsgSubmitAnchorCommitmentList) { m.ListSizeBytes = 32 * (f.rows + 1) })
+		require.ErrorContains(t, err, "first recorded list is final", "a different size")
+		_, err = correct(height, "https://da.example/x", func(m *types.MsgSubmitAnchorCommitmentList) { m.SubmitterAddress = f.operators[1] })
+		require.ErrorContains(t, err, "not the winner Worker", "another signer")
+		_, err = correct(height, "https://elsewhere.example/list", nil)
+		require.ErrorContains(t, err, "data-availability endpoint", "outside the frozen prefix")
+		_, err = correct(height, "ftp://da.example/list", nil)
+		require.ErrorContains(t, err, "http or https")
+		require.Equal(t, before, f.audit(t), "a refused message changes nothing")
+	}
+	applied := func(height uint64, uri string) {
+		t.Helper()
+		before := f.audit(t)
+		resp, err := correct(height, uri, nil)
+		require.NoError(t, err)
+		require.Equal(t, shared.MutationStatusV1_MUTATION_STATUS_V1_APPLIED, resp.Status)
+		before.CommitmentListUri = uri
+		require.Equal(t, before, f.audit(t))
+	}
+
+	// Before the draw.
+	refused(state.SampleHeight + 2)
+	applied(state.SampleHeight+2, "https://da.example/a")
+	// After the draw.
+	require.Equal(t, uint64(1), f.sweep(t, recorded.PositionBeaconLastHeight))
+	drawn := f.audit(t)
+	require.NotEmpty(t, drawn.Positions)
+	refused(drawn.PositionsHeight + 1)
+	applied(drawn.PositionsHeight+1, "https://da.example/b")
+	require.Equal(t, drawn.Positions, f.audit(t).Positions)
+	// After the list deadline (the hash was recorded in time).
+	refused(drawn.ListDeadlineHeight + 5)
+	applied(drawn.ListDeadlineHeight+5, "https://da.example/c")
+	// After the verdict is final: a NOOP, the location stays.
+	f.openAndProveDrawn(t, f.audit(t))
+	_, err := f.vote(0, f.valAcct[0], anchorReject, drawn.PositionsHeight+3)
+	require.NoError(t, err)
+	_, err = f.vote(1, f.valAcct[1], anchorReject, drawn.PositionsHeight+3)
+	require.NoError(t, err)
+	final := f.audit(t)
+	require.NotZero(t, final.ResultHeight)
+	resp, err := correct(drawn.PositionsHeight+4, "https://da.example/d", nil)
+	require.NoError(t, err)
+	require.Equal(t, shared.MutationStatusV1_MUTATION_STATUS_V1_NOOP, resp.Status)
+	require.Equal(t, final, f.audit(t))
+	_, err = correct(drawn.PositionsHeight+4, "https://da.example/d", func(m *types.MsgSubmitAnchorCommitmentList) { m.ListHash = bytes32(0x2b) })
+	require.ErrorContains(t, err, "first recorded list is final")
+}
+
+// CH-5. A correction cannot be used to record a list late: without a recorded
+// list the message is a first list and is refused after the deadline.
+func TestAuditF_ListLocationCorrectionIsNotALateList(t *testing.T) {
+	f := newTwoStepFixture(t, 0)
+	state := f.selected(t)
+	msg := f.listMsg(0x1a)
+	msg.ListUri = "https://da.example/corrected"
+	_, err := f.server.SubmitAnchorCommitmentList(f.at(int64(state.ListDeadlineHeight+1)), msg)
+	require.ErrorContains(t, err, "deadline")
+	require.Empty(t, f.audit(t).CommitmentListHash)
 }

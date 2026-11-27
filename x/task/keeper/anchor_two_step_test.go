@@ -369,14 +369,13 @@ func TestTwoStepFirstListIsFinal(t *testing.T) {
 	replay := func(height uint64) {
 		t.Helper()
 		msg := f.listMsg(0x1a)
-		msg.ListUri = "https://da.example/another-location"
 		resp, err := f.server.SubmitAnchorCommitmentList(f.at(int64(height)), msg)
 		require.NoError(t, err)
 		require.Equal(t, shared.MutationStatusV1_MUTATION_STATUS_V1_NOOP, resp.Status)
 		require.Equal(t, recorded.PositionBeaconFirstHeight, resp.PositionBeaconFirstHeight)
 		require.Equal(t, recorded.PositionBeaconLastHeight, resp.PositionBeaconLastHeight)
 		now := f.audit(t)
-		require.Equal(t, recorded.CommitmentListUri, now.CommitmentListUri, "the location of a repetition is not stored")
+		require.Equal(t, recorded.CommitmentListUri, now.CommitmentListUri)
 		require.Equal(t, recorded.CommitmentListHeight, now.CommitmentListHeight)
 		require.Equal(t, recorded.PositionBeaconFirstHeight, now.PositionBeaconFirstHeight, "a repetition never moves the beacon window")
 	}
