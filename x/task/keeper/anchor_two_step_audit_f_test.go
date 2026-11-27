@@ -348,3 +348,84 @@ func TestAuditF_ListLocationCorrectionIsNotALateList(t *testing.T) {
 	require.ErrorContains(t, err, "deadline")
 	require.Empty(t, f.audit(t).CommitmentListHash)
 }
+
+// CH-7. On a round that did not pass, a missing opening (one step) is applied
+// only by a settlement at or after the verdict deadline: before it the audit
+// imposes nothing, because the Worker is not paid either way. A missing list
+// (two steps) was applied from the block after the list deadline instead, long
+// before. The two are now read at the same moments, whether or not the EndBlock
+// queue has already recorded the missing list.
+func TestAuditF_MissingListOnAFailedRoundIsTimedLikeAMissingOpening(t *testing.T) {
+	pass, fail := types.TaskVerdict_TASK_VERDICT_PASS, types.TaskVerdict_TASK_VERDICT_FAIL
+	rejectTimeout := func(view *types.AnchorAuditState) {
+		t.Helper()
+		require.NotNil(t, view)
+		require.Equal(t, anchorReject, view.TaskVerdict)
+		require.Equal(t, types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_TIMEOUT, view.ResultSource)
+	}
+
+	// The one-step reference: a selected audit, no opening.
+	one := newAnchorOnlyFixture(t, 4_000, true)
+	one.submitReceipt(t)
+	oneState := one.sampleRound(t)
+	require.NotEmpty(t, oneState.Positions)
+	view, err := one.keeper.anchorSettlementView(one.ctx, one.taskKey, fail, oneState.VerdictDeadlineHeight-1)
+	require.NoError(t, err)
+	require.Nil(t, view, "one step, failed round, before the verdict deadline: nothing is imposed")
+	view, err = one.keeper.anchorSettlementView(one.ctx, one.taskKey, fail, oneState.VerdictDeadlineHeight)
+	require.NoError(t, err)
+	rejectTimeout(view)
+
+	for _, queueRan := range []bool{false, true} {
+		f := newTwoStepFixture(t, 4_000)
+		state := f.selected(t)
+		after := state.ListDeadlineHeight + 1
+		if queueRan {
+			require.Equal(t, uint64(1), f.sweep(t, after))
+			recorded := f.audit(t)
+			require.Equal(t, anchorReject, recorded.TaskVerdict, "the row still records the missing list when it is established")
+			require.Equal(t, after, recorded.ResultHeight)
+		}
+		for _, height := range []uint64{after, after + 10, state.VerdictDeadlineHeight - 1} {
+			view, err := f.keeper.anchorSettlementView(f.ctx, f.taskKey, fail, height)
+			require.NoError(t, err)
+			require.Nil(t, view, "two steps, failed round, height %d before the verdict deadline (queue ran: %v)", height, queueRan)
+		}
+		view, err := f.keeper.anchorSettlementView(f.ctx, f.taskKey, fail, state.VerdictDeadlineHeight)
+		require.NoError(t, err)
+		rejectTimeout(view)
+		require.Equal(t, anchorListMissingReason, view.ResultReason)
+
+		// A PASS round is unchanged: the established omission decides the task
+		// from the block after the list deadline, and never earlier.
+		_, err = f.keeper.anchorSettlementView(f.ctx, f.taskKey, pass, state.ListDeadlineHeight)
+		if queueRan {
+			require.NoError(t, err)
+		} else {
+			require.ErrorContains(t, err, "pending until")
+		}
+		view, err = f.keeper.anchorSettlementView(f.ctx, f.taskKey, pass, after)
+		require.NoError(t, err)
+		rejectTimeout(view)
+	}
+}
+
+// CH-7. The alignment touches the missing list only. A verdict the validators
+// reached, or a NO_VERDICT of the chain, is read as before on a failed round.
+func TestAuditF_FailedRoundStillReadsOtherFinalVerdicts(t *testing.T) {
+	fail := types.TaskVerdict_TASK_VERDICT_FAIL
+	f := newTwoStepFixture(t, 4_000)
+	state := f.selected(t)
+	drawn := f.drawn(t, state.SampleHeight+1)
+	f.openAndProveDrawn(t, drawn)
+	_, err := f.vote(0, f.valAcct[0], anchorReject, drawn.PositionsHeight+3)
+	require.NoError(t, err)
+	_, err = f.vote(1, f.valAcct[1], anchorReject, drawn.PositionsHeight+3)
+	require.NoError(t, err)
+	require.NotZero(t, f.audit(t).ResultHeight)
+	view, err := f.keeper.anchorSettlementView(f.ctx, f.taskKey, fail, drawn.PositionsHeight+4)
+	require.NoError(t, err)
+	require.NotNil(t, view)
+	require.Equal(t, anchorReject, view.TaskVerdict)
+	require.Equal(t, types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_VALIDATOR_VOTE, view.ResultSource)
+}

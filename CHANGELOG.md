@@ -57,6 +57,12 @@
     the size stay final: any other content is refused as before. With the
     recorded location, or after the verdict is final, the message is a NOOP.
     Before, a wrong first location could never be corrected.
+  - A missing commitment list on a round that did not pass is applied at the
+    same moment as a missing opening: only by a settlement at or after the
+    verdict deadline. Before, it took the timeout fault from the block after
+    the list deadline, where the one-step counterpart imposes nothing. The
+    audit row still records REJECT / TIMEOUT one block after the list deadline,
+    and a PASS round is decided by it from that block as before.
   - **Upgrade plan `v0.6.4-two-step-sampling`; Task module consensus version
     4 -> 5.** The Task parameter commitment frames every field, so the fields
     added since the anchor audit release (18..43) change the hash of an

@@ -125,6 +125,15 @@ func anchorTimeoutVerdict(state types.AnchorAuditState) (types.AnchorVerdictV1, 
 	}
 }
 
+// anchorMissingListOutcome reports whether a final audit ended on the missing
+// commitment list of a two-step task: the outcome the EndBlock queue records
+// one block after the list deadline (and settlement at its own height).
+func anchorMissingListOutcome(state types.AnchorAuditState) bool {
+	return isAnchorTwoStep(state) && !anchorListRecorded(state) && state.ResultHeight != 0 &&
+		state.TaskVerdict == types.AnchorVerdictV1_ANCHOR_VERDICT_V1_REJECT &&
+		state.ResultSource == types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_TIMEOUT
+}
+
 func emitAnchorVerdictEvent(ctx context.Context, state types.AnchorAuditState) error {
 	return emitTypedEvent(ctx, &types.EventAnchorVerdictFinalized{
 		TaskId: append([]byte(nil), state.TaskId...), Verdict: state.TaskVerdict, Source: state.ResultSource,
@@ -154,10 +163,25 @@ func (k Keeper) anchorSettlementView(ctx context.Context, taskKey types.TaskKey,
 		return nil, nil
 	}
 	deadline := anchorVerdictDeadline(state)
+	// A missing commitment list is the two-step counterpart of a missing
+	// opening and is settled at the same moments. On a PASS round it decides
+	// the task as soon as it is established (the list deadline has passed; the
+	// one-step task waits for its verdict deadline only because an opening
+	// could still arrive). On a round that did not pass, the Worker is not
+	// paid either way and settlement does not wait for the audit: the omission
+	// is applied only by a settlement at or after the verdict deadline,
+	// exactly like a missing opening. Without this a two-step Worker took the
+	// timeout fault from the block after the list deadline, long before its
+	// one-step counterpart would.
+	omissionNotDue := roundVerdict != types.TaskVerdict_TASK_VERDICT_PASS && height < deadline
 	if state.ResultHeight != 0 {
+		if omissionNotDue && anchorMissingListOutcome(state) {
+			// Recorded by the EndBlock queue one block after the list deadline.
+			return nil, nil
+		}
 		return &state, nil
 	}
-	if anchorListDeadlinePassed(state, height) {
+	if anchorListDeadlinePassed(state, height) && !omissionNotDue {
 		// Two-step sampling: no list was accepted and none can be any more. The
 		// EndBlock queue records this outcome one block after the list deadline;
 		// settlement reads the same outcome here when that visit has not happened
