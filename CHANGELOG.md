@@ -63,6 +63,15 @@
     the list deadline, where the one-step counterpart imposes nothing. The
     audit row still records REJECT / TIMEOUT one block after the list deadline,
     and a PASS round is decided by it from that block as before.
+  - A chain that stops requiring the VRF beacon after a two-step Profile was
+    registered can make no position draw. Such an audit now ends at its first
+    draw visit as NO_VERDICT (source `TIMEOUT`) with a reason of its own that
+    names `beacon.vrf_required_from_height`, instead of restarting windows
+    until none fits: the Worker is paid, nothing is slashed. A draw whose
+    beacons are verified proposer-VRF values is made as before.
+    `MsgUpdateHubParams` now refuses to set `beacon.vrf_required_from_height`
+    to zero, or above the current height once it has been reached, while a
+    Profile version that is not delisted uses two-step sampling.
   - **Upgrade plan `v0.6.4-two-step-sampling`; Task module consensus version
     4 -> 5.** The Task parameter commitment frames every field, so the fields
     added since the anchor audit release (18..43) change the hash of an

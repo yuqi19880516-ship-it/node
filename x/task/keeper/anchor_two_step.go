@@ -57,6 +57,10 @@ const (
 
 	anchorListMissingReason     = "worker did not post the commitment list before the list deadline"
 	anchorPositionsMissingReson = "the chain did not draw positions for the recorded commitment list"
+	// anchorVRFNotRequiredReason ends a two-step audit on a chain that no
+	// longer (or not yet) requires the proposer-VRF beacon. It is the chain's
+	// own configuration, never the Worker's fault: NO_VERDICT, paid.
+	anchorVRFNotRequiredReason = "the proposer-VRF beacon is not required at this height (beacon.vrf_required_from_height), so two-step sampling cannot draw"
 	// anchorSamplingSweepConservativeBytesV1 is the byte charge of one visited
 	// row of the sampling queue: the audit row, the receipt the row count is
 	// read from, and the beacons of one window.
@@ -420,6 +424,21 @@ func (k Keeper) anchorContributingBeacons(ctx context.Context, first, last uint6
 	return out, true
 }
 
+// anchorVRFBeaconRequired reports whether the chain requires the proposer-VRF
+// beacon at height. known is false when the Hub cannot answer; the caller then
+// keeps restarting windows, which is the behaviour without this fact.
+func (k Keeper) anchorVRFBeaconRequired(ctx context.Context, height uint64) (required, known bool) {
+	reader, ok := k.hubKeeper.(types.BeaconVRFRequirement)
+	if !ok {
+		return false, false
+	}
+	required, err := reader.BeaconSentinelRequiredAtHeight(ctx, height)
+	if err != nil {
+		return false, false
+	}
+	return required, true
+}
+
 // finalizeAnchorSamplingOutcome ends a two-step audit that never reached the
 // draw, in the EndBlock queue: REJECT for the Worker's missing list, NO_VERDICT
 // when the chain could not draw. Settlement applies the consequence.
@@ -500,6 +519,18 @@ func (k Keeper) drawAnchorPositions(ctx context.Context, taskKey types.TaskKey, 
 	}
 	beacons, ok := k.anchorContributingBeacons(ctx, state.PositionBeaconFirstHeight, state.PositionBeaconLastHeight)
 	if !ok {
+		// The Hub admits a two-step Profile only on a chain that requires the
+		// VRF beacon, but governance may remove or postpone that requirement
+		// later (and a genesis may carry such a Profile without it). Blocks
+		// then carry the block-hash placeholder, which is never accepted here,
+		// so no window can be expected to succeed: the audit ends at once with
+		// its own reason instead of restarting windows until none fits. It is
+		// the chain's configuration: NO_VERDICT, the Worker is paid, no fault.
+		if required, known := k.anchorVRFBeaconRequired(ctx, height); known && !required {
+			sdk.UnwrapSDKContext(ctx).Logger().Error("anchor position draw abandoned: the proposer-VRF beacon is not required at this height; every two-step audit ends NO_VERDICT until beacon.vrf_required_from_height is set and reached",
+				"task", fmt.Sprintf("%x", []byte(taskKey)), "height", height)
+			return noDraw(anchorVRFNotRequiredReason)
+		}
 		_, beaconBlocks := v.AnchorTwoStepWindows()
 		first, o3 := checkedHeightAdd(height, 1)
 		last, o4 := checkedHeightAdd(height, beaconBlocks)

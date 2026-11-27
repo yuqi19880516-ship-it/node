@@ -429,3 +429,85 @@ func TestAuditF_FailedRoundStillReadsOtherFinalVerdicts(t *testing.T) {
 	require.Equal(t, anchorReject, view.TaskVerdict)
 	require.Equal(t, types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_VALIDATOR_VOTE, view.ResultSource)
 }
+
+// CH-8. The VRF requirement is checked when a two-step Profile is registered.
+// If the chain later stops requiring the VRF beacon, blocks carry the
+// block-hash placeholder and no draw can be made. The audit then ends at the
+// first visit with a reason of its own: NO_VERDICT, the Worker is paid, no
+// fault, and no window is restarted.
+func TestAuditF_VRFRequirementRemovedEndsTheAuditPaidWithItsOwnReason(t *testing.T) {
+	f := newTwoStepFixture(t, 4_000)
+	state := f.selected(t)
+	recorded := f.postList(t, state.SampleHeight+1)
+	*f.hub.vrfNotRequired = true
+	for h := recorded.PositionBeaconFirstHeight; h <= recorded.PositionBeaconLastHeight; h++ {
+		f.hub.placeholder[int64(h)] = true
+	}
+	ctx := sdk.UnwrapSDKContext(f.at(int64(recorded.PositionBeaconLastHeight))).WithEventManager(sdk.NewEventManager())
+	visited, err := f.keeper.processAnchorSamplingDue(ctx, recorded.PositionBeaconLastHeight, 10)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), visited)
+
+	final := f.audit(t)
+	require.Equal(t, recorded.PositionBeaconLastHeight, final.ResultHeight, "ended at the first visit, no window restarted")
+	require.Equal(t, recorded.PositionBeaconFirstHeight, final.PositionBeaconFirstHeight)
+	require.Empty(t, final.Positions)
+	require.Equal(t, anchorNoVerdict, final.TaskVerdict)
+	require.Equal(t, types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_TIMEOUT, final.ResultSource)
+	require.Contains(t, final.ResultReason, anchorVRFNotRequiredReason)
+	require.Contains(t, final.ResultReason, "vrf_required_from_height")
+	require.LessOrEqual(t, len(final.ResultReason), maxAnchorVerdictReasonBytes)
+	require.Equal(t, anchorPositionsMissingReson+": "+anchorVRFNotRequiredReason, final.ResultReason, "the reason is recorded in full, not truncated")
+	_, queued := f.dueHeight(t)
+	require.False(t, queued)
+	var verdictEvents int
+	for _, e := range ctx.EventManager().Events() {
+		if e.Type == "task.v1.EventAnchorVerdictFinalized" {
+			verdictEvents++
+		}
+	}
+	require.Equal(t, 1, verdictEvents, "the outcome is announced with the verdict event, which carries the reason")
+
+	settlement, err := f.settleNow(t, final.ResultHeight)
+	require.NoError(t, err)
+	f.requirePaidInFull(t, settlement)
+	require.Empty(t, *f.faults)
+}
+
+// CH-8. The reason is about beacons that cannot be used, not about the
+// parameter alone: when the contributing beacons are verified proposer-VRF
+// values the draw is made whatever the requirement says.
+func TestAuditF_VRFNotRequiredButBeaconsGoodStillDraws(t *testing.T) {
+	f := newTwoStepFixture(t, 0)
+	state := f.selected(t)
+	*f.hub.vrfNotRequired = true
+	drawn := f.drawn(t, state.SampleHeight+1)
+	require.NotEmpty(t, drawn.Positions)
+	require.Zero(t, drawn.ResultHeight)
+}
+
+// hubWithoutVRFAnswer is a Hub view that cannot say whether the VRF beacon is
+// required.
+type hubWithoutVRFAnswer struct{ types.HubKeeper }
+
+// CH-8. While the VRF beacon is required, or when the Hub cannot answer, a bad
+// window is restarted as before: one placeholder beacon does not end the audit.
+func TestAuditF_BadBeaconStillRestartsWhileVRFIsRequiredOrUnknown(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		f := newTwoStepFixture(t, 0)
+		state := f.selected(t)
+		recorded := f.postList(t, state.SampleHeight+1)
+		f.hub.placeholder[int64(recorded.PositionBeaconFirstHeight)] = true
+		if unknown {
+			f.keeper.hubKeeper = hubWithoutVRFAnswer{f.keeper.hubKeeper}
+			_, known := f.keeper.anchorVRFBeaconRequired(f.ctx, recorded.PositionBeaconLastHeight)
+			require.False(t, known)
+		}
+		require.Equal(t, uint64(1), f.sweep(t, recorded.PositionBeaconLastHeight))
+		restarted := f.audit(t)
+		require.Zero(t, restarted.ResultHeight, "unknown: %v", unknown)
+		require.Equal(t, recorded.PositionBeaconLastHeight+1, restarted.PositionBeaconFirstHeight)
+		require.Equal(t, uint64(1), f.sweep(t, restarted.PositionBeaconLastHeight))
+		require.NotEmpty(t, f.audit(t).Positions)
+	}
+}

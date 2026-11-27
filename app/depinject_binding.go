@@ -5,7 +5,16 @@ import (
 	"reflect"
 
 	"cosmossdk.io/depinject"
+
+	hubkeeper "github.com/TrueOpen/node/x/hub/keeper"
+	tasktypes "github.com/TrueOpen/node/x/task/types"
 )
+
+// The Task keeper reads this Hub fact through a type assertion on its
+// HubKeeper (two-step anchor sampling: is the VRF beacon required). The
+// concrete Hub keeper bound to that interface must keep providing it, or the
+// assertion silently stops matching.
+var _ tasktypes.BeaconVRFRequirement = hubkeeper.Keeper{}
 
 // depinject.BindInterface takes the two type names as strings, and the name it
 // compares against is depinject's own unexported fullyQualifiedTypeName:

@@ -31,6 +31,13 @@ type twoStepHubStub struct {
 	// missingFrom, when non-zero, removes every beacon from that height on.
 	missingFrom *int64
 	endpoint    *string
+	// vrfNotRequired, when set, makes the chain answer that the proposer-VRF
+	// beacon is not required (governance removed or postponed the requirement).
+	vrfNotRequired *bool
+}
+
+func (s twoStepHubStub) BeaconSentinelRequiredAtHeight(context.Context, uint64) (bool, error) {
+	return !*s.vrfNotRequired, nil
 }
 
 func testBlockBeacon(height int64) []byte {
@@ -80,9 +87,11 @@ func newTwoStepFixture(t *testing.T, bond uint64) *twoStepFixture {
 	require.NoError(t, af.keeper.Params.Set(af.ctx, af.params))
 	var missingFrom int64
 	endpoint := ""
+	vrfNotRequired := false
 	hub := twoStepHubStub{
 		anchorOnlyHubStub: af.keeper.hubKeeper.(anchorOnlyHubStub),
 		missing:           map[int64]bool{}, placeholder: map[int64]bool{}, missingFrom: &missingFrom, endpoint: &endpoint,
+		vrfNotRequired: &vrfNotRequired,
 	}
 	af.keeper.hubKeeper = hub
 	af.server = msgServer{k: af.keeper}
