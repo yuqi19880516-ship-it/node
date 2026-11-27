@@ -72,6 +72,12 @@
     `MsgUpdateHubParams` now refuses to set `beacon.vrf_required_from_height`
     to zero, or above the current height once it has been reached, while a
     Profile version that is not delisted uses two-step sampling.
+  - `docs/runbooks/anchor_two_step_sampling.md`: the heights of one audit, the
+    longest audit life a Worker's retention must cover, the list message rules,
+    the upgrade, and the stated residual of the position beacon (the last
+    contributing proposers can re-roll the draw by withholding a block, and the
+    Worker chooses which proposers those are) with guidance for
+    `anchor_position_beacon_blocks`. The protocol is not changed for it.
   - **Upgrade plan `v0.6.4-two-step-sampling`; Task module consensus version
     4 -> 5.** The Task parameter commitment frames every field, so the fields
     added since the anchor audit release (18..43) change the hash of an
