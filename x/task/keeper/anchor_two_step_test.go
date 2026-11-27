@@ -957,9 +957,9 @@ func TestTwoStepParamsValidation(t *testing.T) {
 
 	// The retention check covers the longer audit.
 	p := base
-	before := p.Verification.AnchorTotalWindowBlocks()
-	p.Verification.AnchorListWindowBlocks, p.Verification.AnchorPositionBeaconBlocks = 1_800, 8
-	require.Equal(t, before+1_808, p.Verification.AnchorTotalWindowBlocks())
+	oneStep := p.Verification.AnchorOpenWindowBlocks + p.Verification.AnchorProofWindowBlocks + p.Verification.AnchorVerdictWindowBlocks
+	p.Verification.AnchorListWindowBlocks, p.Verification.AnchorPositionBeaconBlocks = 2_500, 16
+	require.Equal(t, oneStep+2_500+16+types.AnchorPositionDrawGraceBlocks, p.Verification.AnchorTotalWindowBlocks())
 	p.Cleanup.TaskTerminalSummaryRetentionBlocks = p.Verification.AnchorTotalWindowBlocks()
 	require.Error(t, p.Validate(), "the audit must end before the task's summary is pruned")
 

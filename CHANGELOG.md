@@ -39,6 +39,15 @@
     restarted beacon window. No window of the Worker is shortened; the list
     deadline is unchanged; audits selected before the change keep the deadline
     they carry.
+  - Parameter validation now compares the task retention
+    (`cleanup.task_terminal_summary_retention_blocks`) with the real longest
+    life of an audit: list window + beacon blocks + 256 + opening + proof +
+    verdict windows, where the list window and beacon blocks are the configured
+    ones or, when the body carries none, the recommended 1,800 + 8 that a task
+    of a two-step Profile then runs on. Before, the fallback windows were not
+    counted. A body recorded under the earlier rule stays valid as history and
+    keeps its commitment; a parameter update or a genesis whose retention is
+    not above the new bound is refused.
 - **Consensus-breaking: anchor audit, material the Worker does not keep
   retrievable.** A validator that cannot obtain the opening, proof or manifest
   a Worker recorded may vote `UNAVAILABLE`.

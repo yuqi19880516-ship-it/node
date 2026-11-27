@@ -157,3 +157,58 @@ func TestAuditF_AuditsSelectedBeforeTheGraceKeepTheirDeadline(t *testing.T) {
 	require.Equal(t, old.VerdictDeadlineHeight, drawn.VerdictDeadlineHeight)
 	require.LessOrEqual(t, drawn.ProofDeadlineHeight+verdict, drawn.VerdictDeadlineHeight)
 }
+
+// CH-3. A two-step task whose frozen parameters carry no window runs on the
+// Recommended values (1,800 + 8 blocks). The retention bound that parameter
+// validation enforces did not count them (validated 8,400 against a real audit
+// life of 10,208 in the audit's reproduction
+// TestAuditF_FallbackWindowsAreNotInTheRetentionBound). The bound is now the
+// real life of the audit, fallback windows and draw grace included.
+func TestAuditF_RetentionBoundCoversTheFallbackTwoStepAudit(t *testing.T) {
+	p := types.DefaultTaskParams().WithAnchorDefaults()
+	require.False(t, p.Verification.AnchorTwoStepConfigured())
+	listWindow, m := p.Verification.AnchorTwoStepWindows()
+	require.Equal(t, types.RecommendedAnchorListWindowBlocks, listWindow)
+	require.Equal(t, uint64(types.RecommendedAnchorPositionBeaconBlocks), m)
+	v := p.Verification
+	life := listWindow + m + types.AnchorPositionDrawGraceBlocks + v.AnchorOpenWindowBlocks + v.AnchorProofWindowBlocks + v.AnchorVerdictWindowBlocks
+	require.Equal(t, life, v.AnchorTotalWindowBlocks(), "the validated bound is the real life of a fallback two-step audit")
+
+	p.Cleanup.TaskTerminalSummaryRetentionBlocks = life
+	require.ErrorContains(t, p.Validate(), "task_terminal_summary_retention_blocks", "a retention the audit can outlive is refused")
+	p.Cleanup.TaskTerminalSummaryRetentionBlocks = life + 1
+	require.NoError(t, p.Validate())
+
+	// The value the audit's reproduction showed to be accepted: one block more
+	// than the three one-step windows.
+	p.Cleanup.TaskTerminalSummaryRetentionBlocks = v.AnchorOpenWindowBlocks + v.AnchorProofWindowBlocks + v.AnchorVerdictWindowBlocks + 1
+	require.Error(t, p.Validate())
+	// A body recorded under the earlier rule stays valid as history and keeps
+	// its commitment; it is only refused as a body to put in force.
+	require.NoError(t, types.ValidateHistoricalTaskParams(p))
+	_, err := types.TaskParamsHashV1("c", 1, p)
+	require.NoError(t, err)
+	// The repair an upgrade applies raises the retention above the real life.
+	repaired, notes := types.RepairAnchorParams(p)
+	require.NotEmpty(t, notes)
+	require.Greater(t, repaired.Cleanup.TaskTerminalSummaryRetentionBlocks, repaired.Verification.AnchorTotalWindowBlocks())
+	require.NoError(t, repaired.Validate())
+}
+
+// CH-3. The bound equals what the keeper really writes: the span from the
+// block that records the selection to the verdict deadline, for a task on the
+// fallback windows and for a task on configured ones.
+func TestAuditF_RetentionBoundEqualsTheWrittenAuditLife(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		f := newTwoStepFixture(t, 0)
+		if !configured {
+			f.params.Verification.AnchorListWindowBlocks, f.params.Verification.AnchorPositionBeaconBlocks = 0, 0
+			require.NoError(t, f.keeper.Params.Set(f.ctx, f.params))
+		}
+		state := f.selected(t)
+		selection := f.window.SelectionRandomnessHeight
+		require.Equal(t, f.params.Verification.AnchorTotalWindowBlocks(), state.VerdictDeadlineHeight-selection, "configured: %v", configured)
+		require.NoError(t, f.params.Validate())
+		require.Less(t, state.VerdictDeadlineHeight-selection, f.params.Cleanup.TaskTerminalSummaryRetentionBlocks)
+	}
+}

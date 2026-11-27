@@ -433,6 +433,14 @@ func (p TaskParamsV1) HasAnchorParams() bool {
 }
 
 func (p TaskParamsV1) Validate() error {
+	return p.validate(p.Verification.AnchorTotalWindowBlocks())
+}
+
+// validate checks the body; anchorLife is the audit life the task retention
+// must exceed: AnchorTotalWindowBlocks for a body that is to be put in force,
+// the bound as it was recorded for a body kept as history
+// (ValidateHistoricalTaskParams).
+func (p TaskParamsV1) validate(anchorLife uint64) error {
 	if p.SchemaVersion != TaskParamsSchemaVersion {
 		return fmt.Errorf("schema_version must be %d", TaskParamsSchemaVersion)
 	}
@@ -451,9 +459,9 @@ func (p TaskParamsV1) Validate() error {
 	if err := validateVerificationParams(p.Verification); err != nil {
 		return err
 	}
-	if p.Verification.AnchorTotalWindowBlocks() >= p.Cleanup.TaskTerminalSummaryRetentionBlocks {
-		return fmt.Errorf("verification anchor windows (%d blocks) must be shorter than cleanup.task_terminal_summary_retention_blocks",
-			p.Verification.AnchorTotalWindowBlocks())
+	if anchorLife >= p.Cleanup.TaskTerminalSummaryRetentionBlocks {
+		return fmt.Errorf("verification anchor windows (%d blocks, the longest life of an anchor audit) must be shorter than cleanup.task_terminal_summary_retention_blocks",
+			anchorLife)
 	}
 	if err := validateEvidenceParams(p.Evidence); err != nil {
 		return err
@@ -768,11 +776,37 @@ func (v VerificationParamsV1) AnchorTwoStepWindows() (listWindow uint64, beaconB
 // arithmetic cannot overflow and an audit cannot outlive task retention.
 const AnchorWindowBlocksMaximum = uint64(1_000_000)
 
-// AnchorTotalWindowBlocks is how long after sampling an audit may stay open.
-// With two-step sampling configured it includes the list window and the
-// beacon blocks of the position draw.
+// AnchorTotalWindowBlocks is the longest an anchor audit of a task frozen on
+// this body may stay open, counted from the block that records its selection
+// to its verdict deadline:
+//
+//	list window + beacon blocks + AnchorPositionDrawGraceBlocks
+//	  + opening window + proof window + verdict window
+//
+// The list window and the beacon blocks are the ones a two-step audit really
+// runs with (AnchorTwoStepWindows): the configured values, or the Recommended*
+// fallback when the body carries none. The fallback is counted even though the
+// body does not enable two-step sampling, because a task of a two-step Profile
+// frozen on such a body is still audited in two steps, on the fallback
+// windows; leaving them out let a body validate with a task retention shorter
+// than the audit it has to outlive. A one-step audit is shorter than this.
+// Each term is at most AnchorWindowBlocksMaximum, so the sum cannot overflow.
 func (v VerificationParamsV1) AnchorTotalWindowBlocks() uint64 {
-	total := v.AnchorOpenWindowBlocks + v.AnchorProofWindowBlocks + v.AnchorVerdictWindowBlocks
+	listWindow, beaconBlocks := v.AnchorTwoStepWindows()
+	return v.anchorOneStepWindowBlocks() + listWindow + beaconBlocks + AnchorPositionDrawGraceBlocks
+}
+
+func (v VerificationParamsV1) anchorOneStepWindowBlocks() uint64 {
+	return v.AnchorOpenWindowBlocks + v.AnchorProofWindowBlocks + v.AnchorVerdictWindowBlocks
+}
+
+// anchorRecordedTotalWindowBlocks is the retention bound as it was enforced
+// before AnchorTotalWindowBlocks counted the whole life of a two-step audit.
+// Bodies recorded under it are history and stay valid as recorded
+// (ValidateHistoricalTaskParams); it is never applied to a body that is put in
+// force.
+func (v VerificationParamsV1) anchorRecordedTotalWindowBlocks() uint64 {
+	total := v.anchorOneStepWindowBlocks()
 	if v.AnchorTwoStepConfigured() {
 		total += v.AnchorListWindowBlocks + uint64(v.AnchorPositionBeaconBlocks)
 	}
@@ -1189,7 +1223,10 @@ func ValidateHistoricalTaskParams(params TaskParamsV1) error {
 	if params.Verification.AnchorAuditMinRateBps == 0 {
 		params.Verification.AnchorAuditMinRateBps = DefaultAnchorAuditMinRateBPS
 	}
-	return params.Validate()
+	// The retention bound is the one the body was recorded under: the full
+	// life of a two-step audit (fallback windows, draw grace) was not counted
+	// then, and a recorded body is not made invalid afterwards.
+	return params.validate(params.Verification.anchorRecordedTotalWindowBlocks())
 }
 
 // verificationParamsCanonicalFields frames VerificationParamsV1 for the params
