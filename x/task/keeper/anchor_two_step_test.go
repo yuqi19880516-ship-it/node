@@ -192,7 +192,8 @@ func TestTwoStepSelectionDrawsNoPositionAndHoldsSettlement(t *testing.T) {
 	require.Equal(t, sel+f.listWindow, state.ListDeadlineHeight)
 	require.Zero(t, state.OpeningDeadlineHeight, "the opening deadline is written at the draw")
 	require.Zero(t, state.ProofDeadlineHeight)
-	require.Equal(t, sel+f.listWindow+f.m+open+proof+verdict, state.VerdictDeadlineHeight)
+	require.Equal(t, sel+f.listWindow+f.m+types.AnchorPositionDrawGraceBlocks+open+proof+verdict, state.VerdictDeadlineHeight,
+		"the upper bound: list window, beacon blocks, the chain's draw grace, then the three full windows")
 	require.Empty(t, state.CommitmentListHash)
 	require.Zero(t, state.ResultHeight)
 	require.True(t, anchorAuditBinds(state), "a selected two-step audit binds before it has positions")
@@ -466,7 +467,8 @@ func TestTwoStepListDeadlineBoundary(t *testing.T) {
 	require.Equal(t, uint64(1), f.sweep(t, recorded.PositionBeaconLastHeight))
 	drawn := f.audit(t)
 	require.NotEmpty(t, drawn.Positions)
-	require.Equal(t, drawn.PositionsHeight+open+proof+verdict, drawn.VerdictDeadlineHeight, "the upper bound is exactly reached by the latest in-time list")
+	require.Equal(t, drawn.PositionsHeight+types.AnchorPositionDrawGraceBlocks+open+proof+verdict, drawn.VerdictDeadlineHeight,
+		"the latest in-time list still leaves the chain its whole draw grace")
 }
 
 // ---- missing list --------------------------------------------------------
@@ -724,8 +726,9 @@ func TestTwoStepBeaconsNeverArrivePaysTheWorker(t *testing.T) {
 		height = now.PositionBeaconLastHeight
 		require.Less(t, restarts, 1000)
 	}
-	// The slack is the part of the list window the Worker did not use.
-	require.Equal(t, int((state.ListDeadlineHeight-listAt)/f.m), restarts)
+	// The slack is the chain's draw grace plus the part of the list window the
+	// Worker did not use.
+	require.Equal(t, int((state.ListDeadlineHeight-listAt+types.AnchorPositionDrawGraceBlocks)/f.m), restarts)
 	final := f.audit(t)
 	require.Equal(t, anchorNoVerdict, final.TaskVerdict)
 	require.Equal(t, types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_TIMEOUT, final.ResultSource)
@@ -766,8 +769,8 @@ func TestTwoStepLateDrawKeepsTheWorkersWindows(t *testing.T) {
 func TestTwoStepDrawThatWouldShortenTheWindowsIsNotMade(t *testing.T) {
 	f := newTwoStepFixture(t, 4_000)
 	state := f.selected(t)
-	recorded := f.postList(t, state.ListDeadlineHeight) // no slack at all
-	require.Equal(t, uint64(1), f.sweep(t, recorded.PositionBeaconLastHeight+1))
+	recorded := f.postList(t, state.ListDeadlineHeight) // only the chain's own grace is left
+	require.Equal(t, uint64(1), f.sweep(t, recorded.PositionBeaconLastHeight+types.AnchorPositionDrawGraceBlocks+1))
 	final := f.audit(t)
 	require.Empty(t, final.Positions)
 	require.Equal(t, anchorNoVerdict, final.TaskVerdict)

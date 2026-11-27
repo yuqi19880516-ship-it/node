@@ -119,14 +119,25 @@ func (k Keeper) anchorSamplingModeOf(ctx context.Context, taskKey types.TaskKey)
 // sampling height itself; later only when EndBlock ran late). The verdict
 // deadline is the upper bound over every later step and is never moved, so the
 // settlement index row placed on it stays where it is.
+//
+// The latest height at which the chain still draws is
+//
+//	list deadline + beacon blocks + types.AnchorPositionDrawGraceBlocks
+//
+// and the verdict deadline lies the full opening, proof and verdict windows
+// after it. The grace is the chain's own slack (a late EndBlock visit, a
+// restarted beacon window): a list recorded in the very last block of the list
+// window still has it in full, so the Worker's choice of height cannot leave
+// the draw without room, and no window of the Worker is shortened by it.
 func anchorTwoStepSelection(state *types.AnchorAuditState, v types.VerificationParamsV1, height uint64) bool {
 	listWindow, beaconBlocks := v.AnchorTwoStepWindows()
 	listDeadline, o1 := checkedHeightAdd(height, listWindow)
 	drawBound, o2 := checkedHeightAdd(listDeadline, beaconBlocks)
+	drawBound, o6 := checkedHeightAdd(drawBound, types.AnchorPositionDrawGraceBlocks)
 	openBound, o3 := checkedHeightAdd(drawBound, v.AnchorOpenWindowBlocks)
 	proofBound, o4 := checkedHeightAdd(openBound, v.AnchorProofWindowBlocks)
 	verdictDeadline, o5 := checkedHeightAdd(proofBound, v.AnchorVerdictWindowBlocks)
-	if o1 || o2 || o3 || o4 || o5 {
+	if o1 || o2 || o3 || o4 || o5 || o6 {
 		return false
 	}
 	state.ListDeadlineHeight = listDeadline

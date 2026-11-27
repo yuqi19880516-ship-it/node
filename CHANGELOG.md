@@ -29,6 +29,16 @@
     unchanged: a one-step audit row is byte for byte the previous one. The Task
     parameter commitment changes because it frames every field. Two new store
     prefixes inside the Task store (the sampling queue); no store key change.
+- **Two-step sampling: fixes after the release-candidate audit.**
+  - The chain gives its own position draw a grace of 256 blocks
+    (`AnchorPositionDrawGraceBlocks`, a protocol constant). The verdict deadline
+    written at selection is now `list deadline + beacon blocks + 256 + opening +
+    proof + verdict windows`, and the draw is made as long as the three full
+    windows still end by it. A list recorded in the last block of the list
+    window no longer ends NO_VERDICT after one block of EndBlock delay or one
+    restarted beacon window. No window of the Worker is shortened; the list
+    deadline is unchanged; audits selected before the change keep the deadline
+    they carry.
 - **Consensus-breaking: anchor audit, material the Worker does not keep
   retrievable.** A validator that cannot obtain the opening, proof or manifest
   a Worker recorded may vote `UNAVAILABLE`.

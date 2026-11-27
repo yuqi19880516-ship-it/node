@@ -145,6 +145,19 @@ const (
 	// unknown to the proposer of the block that includes the list.
 	AnchorPositionBeaconBlocksMinimum = uint32(2)
 	AnchorPositionBeaconBlocksMaximum = uint32(256)
+	// AnchorPositionDrawGraceBlocks is the slack the chain gives itself for the
+	// position draw of a two-step audit, on top of the list window and the
+	// beacon blocks. It is added to the verdict deadline fixed at selection, and
+	// the draw is allowed as long as the full opening, proof and verdict windows
+	// still end by that deadline. Without it a Worker that records its list in
+	// the last block of the list window gets a draw only if EndBlock visits the
+	// audit in exactly one block and every contributing beacon is good: one
+	// block of delay would end the audit NO_VERDICT. The grace belongs to the
+	// chain alone: it shortens no window of the Worker and does not depend on
+	// the height the Worker chose for its list. It is a constant of the
+	// protocol, not a governed parameter; it equals the largest beacon count, so
+	// that one full restarted beacon window always fits, whatever the count.
+	AnchorPositionDrawGraceBlocks = uint64(AnchorPositionBeaconBlocksMaximum)
 	// ADR-0040 v5: floor of the per-task audit probability (5%). The floor must
 	// be positive: with a floor of zero a task whose order is worth nothing to
 	// cheat on would never be audited.
