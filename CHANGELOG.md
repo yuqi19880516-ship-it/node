@@ -48,6 +48,18 @@
     counted. A body recorded under the earlier rule stays valid as history and
     keeps its commitment; a parameter update or a genesis whose retention is
     not above the new bound is refused.
+  - **Upgrade plan `v0.6.4-two-step-sampling`; Task module consensus version
+    4 -> 5.** The Task parameter commitment frames every field, so the fields
+    added since the anchor audit release (18..43) change the hash of an
+    unchanged body: after an in-place upgrade the stored commitment no longer
+    matched, the parameter invariant failed and genesis export was refused until
+    the next governance update. The 4 -> 5 migration writes the live body as a
+    new params version with its commitment and archives the replaced version
+    unchanged (rows bound to it keep reading it). A task retention that is not
+    above the new bound is raised by the migration, with a logged note to
+    confirm by governance. A chain whose commitment already matches is left
+    alone. A genesis exported by the previous binary still carries the old
+    commitment and is not accepted as it is by a cold start of this binary.
 - **Consensus-breaking: anchor audit, material the Worker does not keep
   retrievable.** A validator that cannot obtain the opening, proof or manifest
   a Worker recorded may vote `UNAVAILABLE`.

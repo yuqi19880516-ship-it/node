@@ -35,8 +35,18 @@ func (app *App) plannedUpgrades() []upgrade {
 		// ADR-0040 anchor audit: task 3 -> 4 (anchor params initialized),
 		// hub 2 -> 3. New task store prefixes live inside the existing store.
 		{name: AnchorAuditUpgradeName},
+		// Two-step anchor sampling: task 4 -> 5 (the params commitment is
+		// rewritten under the framing that includes the new fields). New task
+		// store prefixes live inside the existing store; hub is unchanged.
+		{name: TwoStepSamplingUpgradeName},
 	}
 }
+
+// TwoStepSamplingUpgradeName is the governance plan name of the upgrade to the
+// binary that carries two-step anchor sampling. Nothing switches on at the
+// upgrade: the flow starts only when governance sets the two parameters, the
+// VRF beacon is required and a version-2 Profile is registered.
+const TwoStepSamplingUpgradeName = "v0.6.4-two-step-sampling"
 
 // AnchorAuditUpgradeName is the governance plan name that activates the
 // ADR-0040 anchor audit. Nodes replaying earlier blocks run the previous binary
