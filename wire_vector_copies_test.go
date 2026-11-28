@@ -16,7 +16,8 @@ import (
 // nodeOwnedFixtures are JSON fixtures under a testdata directory that are not
 // copies of a wire vector. Every other testdata JSON file must be a wire vector.
 var nodeOwnedFixtures = map[string]string{
-	"x/task/keeper/testdata/settlement_build_facts_v1.json": "REST response fixture for the SettlementBuildFacts query; node owns the endpoint",
+	"x/task/keeper/testdata/settlement_build_facts_v1.json":   "REST response fixture for the SettlementBuildFacts query; node owns the endpoint",
+	"x/task/types/testdata/order_input_tokens_eip712_v1.json": "EIP-712 form of the order input-token attestation, published by the SDK; kept here until it is published with the wire vectors",
 }
 
 // pinnedWireModuleDir returns the module-cache directory of the wire release

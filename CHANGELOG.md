@@ -170,6 +170,104 @@
     still choosing its members ends without a conclusion at the first block.
   - Parameter validation: with `anchor_audit_mode = 2`, `anchor_panel_size`
     must be 1..15 and `anchor_panel_threshold` a strict majority of it.
+- **Consensus-breaking: registration hash in the Profile, input-token rule,
+  per-model brake.** Three rules of the Verifier-panel contract. Each is off
+  unless a Profile or a parameter turns it on.
+  - **Registration hash.** The Worker anchor entry of a Profile's
+    `required_infer_evidence` may carry `registration_hash`: the sha256 of the
+    canonical `registration.json` its anchor audit is verified against. It is
+    accepted only on that entry, as a non-zero 32-byte value, in
+    `register-model-profile` JSON (`"registration_hash": "0x…"`) as well. An
+    entry that sets it is framed with it as a fourth field, so the Profile's
+    `evidence_schema_hash`, execution snapshot hash and registration body
+    commit to it; an entry without it is framed and hashed exactly as before.
+    `Query/Profile` returns it inside the evidence schema, and the Task keeper
+    exposes `AnchorRegistrationHash(model_id, profile_version)`.
+  - **Input-token rule** (`input_token_tolerance`, default 0 = off).
+    `MsgRecordDispatch.input_tokens_attestations` may carry the user's signed
+    statement of an order's input token count. With a non-zero tolerance in
+    the parameters the task is recorded under, a statement that names the
+    order, uses the order's signature scheme and signature chain id, and
+    verifies as EIP-712 typed data (domain `TrueOpen Order Input Tokens`
+    version `1`, type `OrderInputTokens(string chainId,bytes32 orderDigest,uint64 inputTokenCount,bytes32 attestationDigest)`)
+    under the key that signed the order is kept with the task. A record
+    without a statement, with two statements for one order, or with one that
+    does not verify is accepted unchanged and the rule does not apply to that
+    task; no dispatch record is refused and nobody is faulted for it. A
+    takeover entry never carries one.
+    A receipt of a task with a statement is refused when the prompt token
+    count read from its Worker token commitment (`(size - 8) / 4 - generated`)
+    is below `statement - tolerance`: `MsgSubmitInferReceipt` answers with
+    status `REJECTED` and accepts nothing. The Worker may send another receipt
+    before the inference deadline. If the deadline passes after such a
+    refusal, the task ends as a refunded failure without the inference-timeout
+    fault. New store prefixes `task_input_token_statement` and
+    `task_input_token_refusal`; neither is part of the exported genesis.
+  - **Per-model brake** (`anchor_brake_min_cases`, default 0 = off; needs
+    `batch_settlement_period_blocks`). Per model and settlement period the
+    chain counts the selected anchor audits settled (`audited`) and those that
+    ended in a REJECT of the Worker's proof (`cases`; a missed deadline or
+    unavailable material is an audit, not a case). The period trips when
+    `cases >= anchor_brake_min_cases` and its rate is at least
+    `anchor_brake_multiple_x1000 / 1000` times the mean rate of the preceding
+    `anchor_brake_baseline_periods` periods that had audits and did not trip
+    (the case count alone when there is none). From the tripping case on, the
+    Worker slash of such a REJECT is withheld; the task still fails and the
+    user is still refunded. `MsgReleaseAnchorBrake`, signed by the module
+    authority, applies or discards the withheld slashes (at most 256 per
+    message; repeat to continue). Later REJECT slashes of that period follow
+    the release. `Query/AnchorBrake` returns the row (`period = 0` is the
+    current period). Events `EventAnchorBrakeTripped` and
+    `EventAnchorBrakeReleased`. Rows are exported in `anchor_brakes`; the
+    withheld slashes are not part of the exported genesis.
+    `anchor_brake_baseline_periods` is bounded at 64. Suggested values are
+    published as `RecommendedAnchorBrakeMinCases` (3),
+    `RecommendedAnchorBrakeMultipleX1000` (3000) and
+    `RecommendedAnchorBrakeBaselinePeriods` (7).
+- **Consensus-breaking: Worker bond floor, order quota and unbonding
+  conditions.** Four Hub service parameters that were carried but not read are
+  now applied. Each is off at its zero default, and a chain that sets none of
+  them stores and answers exactly what it did before.
+  - `worker_bond_floor_by_tier`: a dispatch record whose winner has an
+    effective bond below the floor of the Profile's resource tier is refused.
+    Tiers are listed once, in increasing order, within 1 to 5, with a non-zero
+    amount.
+  - `worker_quota_period_value_bps_of_bond` together with the Task parameter
+    `batch_settlement_period_blocks`: the order value a Worker has reserved and
+    settled in one settlement period may not exceed
+    `effective_bond * bps / 10000`. The period of a task is
+    `record_height / batch_settlement_period_blocks` under the task's own
+    frozen parameters. A dispatch record reserves the task's order value; the
+    record that does not fit is refused. At finality the reservation is
+    replaced by the order value of the tokens the settlement billed (zero for
+    a task that fails before verification). The coefficient is bounded at
+    100000. Without a settlement period there is no quota.
+  - A dispatch record is also refused while the winner's bond has
+    `dispatch_paused` set.
+  - These three refusals reject the new record with `WINNER_NOT_ELIGIBLE` and
+    do nothing else: no ineligibility receipt, no fault, no change to any task
+    already recorded. The existing ineligibility outcomes (tombstoned, fully
+    unbonding, bond below the Profile minimum, liability not covered) are
+    evaluated first and are unchanged.
+  - `stop_dispatch_on_unbond_request`: a service unbonding request sets the
+    pause reason `UNBONDING` (bit 2) on the bond; it is cleared when the
+    operator's pending unbonding total returns to zero.
+  - `unbond_requires_no_open_tasks`: a matured unbonding is not withdrawn
+    while the operator is the Worker of a task that is not final.
+  - `hub.v1.Query/WorkerQuota` answers the period (0 in the request is the
+    current one), the quota at the current effective bond, the reserved and
+    settled value, what is left, and `enforced` (true when both the
+    coefficient and a settlement period are set).
+  - Quota rows are exported and imported in Hub genesis field `worker_quotas`
+    and deleted once they hold no reservation and lie 16 periods behind the
+    operator's newest record. New store prefix `worker_quota`.
+  - Suggested values are published as `RecommendedWorkerQuotaPeriodValueBpsOfBond`
+    (1428), `RecommendedWorkerBondFloorRevenuePeriods` (7) and
+    `RecommendedServiceUnbondingPeriodBlocks` (1209600). No default changed.
+  - A task's terminal transition (settlement, or failure before verification)
+    now reads the task's frozen parameters to find its settlement period. On a
+    chain without a settlement period this is the only difference: one more
+    read in those transactions, no state change.
 - **Consensus-breaking: audit capability for Verifier panels.** A Cortex
   operator may declare `audit_capability` for a model in
   `MsgDeclareModelSupport`, alone or together with inference or verification

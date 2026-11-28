@@ -70,7 +70,7 @@ func (m msgServer) RecordDispatch(ctx context.Context, req *types.MsgRecordDispa
 			if dependency := dispatchBatchDependency(rejectedSequences, *order); dependency != nil {
 				err = dependency
 			} else {
-				mutation, err = m.k.admitDispatchItem(sdk.WrapSDKContext(itemCtx), branch.Dispatch, authority, params, height, identity, uint32(i))
+				mutation, err = m.k.admitDispatchItem(sdk.WrapSDKContext(itemCtx), branch.Dispatch, authority, params, height, identity, uint32(i), req.InputTokensAttestations)
 			}
 		case *types.DispatchRecordEntryV1_Takeover:
 			if branch.Takeover == nil || branch.Takeover.SignedOrder == nil {
@@ -145,7 +145,7 @@ func (k Keeper) dispatchSubmitterAuthority(ctx context.Context, submitter string
 	return hubtypes.DispatchBuilderAuthority{}, fmt.Errorf("submitter is not a current BuilderSet service")
 }
 
-func (k Keeper) admitDispatchItem(ctx context.Context, entry *types.DispatchEntryV1, authority hubtypes.DispatchBuilderAuthority, params types.TaskParamsV1, height uint64, identity [32]byte, itemIndex uint32) (shared.MutationStatusV1, error) {
+func (k Keeper) admitDispatchItem(ctx context.Context, entry *types.DispatchEntryV1, authority hubtypes.DispatchBuilderAuthority, params types.TaskParamsV1, height uint64, identity [32]byte, itemIndex uint32, attestations []*types.OrderInputTokensAttestationV1) (shared.MutationStatusV1, error) {
 	order := entry.SignedOrder.Order
 	taskID, err := types.DeriveTaskIDFromRawSession(order.SessionId, order.OrderSequence)
 	if err != nil {
@@ -176,6 +176,9 @@ func (k Keeper) admitDispatchItem(ctx context.Context, entry *types.DispatchEntr
 		return 0, err
 	}
 	if err := k.applyDispatchRecord(ctx, admission, state, liability, params, itemIndex); err != nil {
+		return 0, err
+	}
+	if err := k.recordInputTokenStatement(ctx, admission, params, attestations); err != nil {
 		return 0, err
 	}
 	return shared.MutationStatusV1_MUTATION_STATUS_V1_APPLIED, nil

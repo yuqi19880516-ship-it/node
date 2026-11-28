@@ -249,6 +249,7 @@ func (q queryServer) AnchorPanelAssignments(ctx context.Context, req *types.Quer
 		if core, err := q.k.TaskCore.Get(ctx, taskKey); err == nil && bytes.Equal(core.TaskId, audit.TaskId) {
 			assignment.ModelId = append([]byte(nil), core.ModelId...)
 			assignment.ProfileVersion = core.ProfileVersion
+			assignment.RegistrationHash = q.k.AnchorRegistrationHash(ctx, core.ModelId, core.ProfileVersion)
 		}
 		out.Assignments = append(out.Assignments, assignment)
 	}

@@ -61,6 +61,68 @@ func workerBatchEnded(status types.WorkerBatchStatusV1) bool {
 	return status == batchSettled || workerBatchForfeited(status)
 }
 
+// workerBatchPayable reports a batch with nothing left to wait for: every
+// member task is final and no withheld forfeiture marks it.
+func workerBatchPayable(batch types.WorkerBatchState) bool {
+	return batch.OpenTaskCount == 0 && len(batch.ForfeitingTaskId) == 0
+}
+
+// resolveWithheldForfeiture ends the wait of a batch whose forfeiture the
+// per-model brake withheld for taskKey: applied, the batch is forfeited as it
+// would have been (unless it has ended meanwhile); discarded, the mark is
+// removed and the batch goes on to payment.
+func (k Keeper) resolveWithheldForfeiture(ctx context.Context, taskKey types.TaskKey, apply bool, height uint64) error {
+	_, batch, key, found, err := k.workerBatchOfTask(ctx, taskKey)
+	if err != nil || !found || workerBatchEnded(batch.Status) || string(batch.ForfeitingTaskId) != string(taskKey) {
+		return err
+	}
+	due, err := shared.ParseAmount(batch.WorkerDue)
+	if err != nil {
+		return err
+	}
+	if apply {
+		if err := k.unscheduleWorkerBatch(ctx, key, batch); err != nil {
+			return err
+		}
+		forfeited, err := shared.ParseAmount(batch.ForfeitedAmount)
+		if err != nil {
+			return err
+		}
+		if due != 0 {
+			if err := k.moveHeldBatchFunds(ctx, hubtypes.TreasuryModuleName, due); err != nil {
+				return err
+			}
+			if err := k.hubKeeper.CreditTaskMaintenance(ctx, workerBatchID(sdkChainID(ctx), key.K1(), batch.Period), shared.NewAmount(due), height); err != nil {
+				return err
+			}
+		}
+		batch.Status = batchForfeitedCheat
+		batch.WorkerDue = shared.NewAmount(0)
+		batch.ForfeitedAmount = shared.NewAmount(forfeited + due)
+		if err := emitTypedEvent(ctx, &types.EventWorkerBatchForfeited{
+			OperatorAddress: batch.OperatorAddress, Period: batch.Period, Status: batchForfeitedCheat,
+			ForfeitingTaskId: append([]byte(nil), taskKey...),
+		}); err != nil {
+			return err
+		}
+		return k.WorkerBatch.Set(ctx, key, batch)
+	}
+	batch.ForfeitingTaskId = nil
+	if batch.Status == batchClosing && workerBatchPayable(batch) {
+		batch.Status = batchQueued
+		batch.QueuedHeight = height
+		if err := k.WorkerBatchQueue.Set(ctx, collections.Join3(height, key.K1(), batch.Period)); err != nil {
+			return err
+		}
+		if err := emitTypedEvent(ctx, &types.EventWorkerBatchQueued{
+			OperatorAddress: batch.OperatorAddress, Period: batch.Period, WorkerDue: batch.WorkerDue,
+		}); err != nil {
+			return err
+		}
+	}
+	return k.WorkerBatch.Set(ctx, key, batch)
+}
+
 // workerBatchID is the 32-byte identifier of a batch in Hub's credit and
 // treasury records.
 func workerBatchID(chainID string, operator []byte, period uint64) []byte {
@@ -195,6 +257,7 @@ func (k Keeper) closeWorkerBatchTask(
 	workerNet uint64,
 	audited bool,
 	forfeiture types.WorkerBatchStatusV1,
+	withheld bool,
 	height uint64,
 ) error {
 	member, batch, key, found, err := k.workerBatchOfTask(ctx, taskKey)
@@ -223,6 +286,21 @@ func (k Keeper) closeWorkerBatchTask(
 	due, overflow := checkedAddUint64(due, workerNet)
 	if overflow {
 		return fmt.Errorf("worker batch due overflows")
+	}
+	if forfeiture != types.WorkerBatchStatusV1_WORKER_BATCH_STATUS_V1_UNSPECIFIED && withheld && !workerBatchEnded(batch.Status) {
+		// The per-model brake withheld this rejection's effects. The batch is
+		// not forfeited now and not paid either: it waits, marked with the
+		// task, for the brake's release.
+		if len(batch.ForfeitingTaskId) == 0 {
+			batch.ForfeitingTaskId = append([]byte(nil), taskKey...)
+		}
+		if err := emitTypedEvent(ctx, &types.EventWorkerBatchForfeited{
+			OperatorAddress: batch.OperatorAddress, Period: batch.Period, Status: forfeiture,
+			ForfeitingTaskId: append([]byte(nil), taskKey...), Withheld: true,
+		}); err != nil {
+			return err
+		}
+		forfeiture = types.WorkerBatchStatusV1_WORKER_BATCH_STATUS_V1_UNSPECIFIED
 	}
 	if forfeiture != types.WorkerBatchStatusV1_WORKER_BATCH_STATUS_V1_UNSPECIFIED && !workerBatchEnded(batch.Status) {
 		if err := k.unscheduleWorkerBatch(ctx, key, batch); err != nil {
@@ -260,7 +338,7 @@ func (k Keeper) closeWorkerBatchTask(
 		if err := k.payWorkerBatch(ctx, key, &batch, workerNet, height); err != nil {
 			return err
 		}
-	case batch.Status == batchClosing && batch.OpenTaskCount == 0:
+	case batch.Status == batchClosing && workerBatchPayable(batch):
 		batch.Status = batchQueued
 		batch.QueuedHeight = height
 		if err := k.WorkerBatchQueue.Set(ctx, collections.Join3(height, key.K1(), batch.Period)); err != nil {
@@ -331,7 +409,7 @@ func (k Keeper) processWorkerBatchCloses(ctx context.Context, currentHeight, lim
 			continue
 		}
 		batch.Status = batchClosing
-		if batch.OpenTaskCount == 0 {
+		if workerBatchPayable(batch) {
 			batch.Status = batchQueued
 			batch.QueuedHeight = currentHeight
 			if err := k.WorkerBatchQueue.Set(ctx, collections.Join3(currentHeight, key.K1(), key.K2())); err != nil {
@@ -406,7 +484,7 @@ func (k Keeper) settleQueuedWorkerBatch(ctx context.Context, key collections.Pai
 		}
 		return err
 	}
-	if batch.Status != batchQueued || batch.OpenTaskCount != 0 {
+	if batch.Status != batchQueued || !workerBatchPayable(batch) {
 		return nil
 	}
 	due, err := shared.ParseAmount(batch.WorkerDue)

@@ -68,6 +68,12 @@ func (s panelHubStub) SetWorkerDispatchPause(_ context.Context, operator string,
 	return after, after != before, nil
 }
 
+// SettleWorkerQuota accepts the quota release of a settled task: the panel
+// tests run with a settlement period and no quota.
+func (panelHubStub) SettleWorkerQuota(context.Context, string, uint64, uint64, uint64, uint64) error {
+	return nil
+}
+
 func (s panelHubStub) AcquirePendingStageDuty(_ context.Context, operator string) error {
 	s.state.duties[operator]++
 	return nil

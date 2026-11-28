@@ -16,7 +16,7 @@ import (
 func TestWorkerDispatchPauseFollowsItsReasons(t *testing.T) {
 	f, operator, _ := auditFixture(t, nil)
 	late := types.WorkerPauseReasonLateSubmission
-	const unbonding = uint32(2)
+	const unbonding = uint32(4) // a second reason (the jailed bit; the unbonding bit is cleared by the bond itself)
 	quota := func() *types.QueryWorkerQuotaResponse {
 		response, err := keeper.NewQueryServerImpl(f.keeper).WorkerQuota(f.ctx, &types.QueryWorkerQuotaRequest{OperatorAddress: operator})
 		require.NoError(t, err)

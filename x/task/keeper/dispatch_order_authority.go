@@ -62,7 +62,7 @@ func (k Keeper) authorizeSessionOrder(ctx context.Context, signed types.SignedOr
 		}
 		return result, rejectDispatch(types.DispatchRejectCodeV1_DISPATCH_REJECT_CODE_V1_ORDER_SIGNATURE_INVALID, err)
 	}
-	return dispatchOrderAdmission{order: order, taskID: taskID, taskHash: taskHash, stream: stream, delegated: delegated, nextSpent: nextSpent}, nil
+	return dispatchOrderAdmission{order: order, taskID: taskID, taskHash: taskHash, stream: stream, delegated: delegated, nextSpent: nextSpent, signed: signed, signer: recovered.Address}, nil
 }
 
 func (k Keeper) requireUnusedDispatchSequence(ctx context.Context, admission dispatchOrderAdmission) error {

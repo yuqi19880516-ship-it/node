@@ -59,11 +59,15 @@ func CanonicalModelProfileProjection(profile shared.ModelProfileProjection) ([]b
 	timeout := profile.TimeoutBootstrapProfile
 	evidenceRequirements := make([]any, len(verification.EvidenceSchema.RequiredInferEvidence))
 	for index, requirement := range verification.EvidenceSchema.RequiredInferEvidence {
-		evidenceRequirements[index] = map[string]any{
+		entry := map[string]any{
 			"commitment_schema_version": requirement.CommitmentSchemaVersion,
 			"evidence_kind":             evidenceKindName(requirement.EvidenceKind),
 			"max_encoded_size_bytes":    requirement.MaxEncodedSizeBytes,
 		}
+		if len(requirement.RegistrationHash) != 0 {
+			entry["registration_hash"] = "0x" + hex.EncodeToString(requirement.RegistrationHash)
+		}
+		evidenceRequirements[index] = entry
 	}
 	return shared.CanonicalJSONV1(map[string]any{
 		"batch_verification": map[string]any{
