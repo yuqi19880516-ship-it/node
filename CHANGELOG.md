@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Upgrade `v0.6.3-verifier-panel`.** The governance plan of this name
+  activates the binary that carries the Verifier-panel audit. The task module
+  goes to consensus version 5 and the hub module to 4. The task and service
+  parameter commitments frame the fields added for the panel audit, so the
+  commitments the previous binary recorded no longer match the same bodies:
+  both migrations commit the unchanged body again as a new params version
+  (the replaced task version is archived, so tasks in flight read the same
+  body). No parameter value changes; every new parameter stays zero until
+  governance sets it. New store prefixes live inside the existing stores.
 - **Consensus-breaking: audit standing of panel Verifiers.** The chain keeps a
   standing per operator that sits on Verifier panels and applies three rules
   to panel eligibility. Each is off while its task parameters are zero (the

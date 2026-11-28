@@ -35,8 +35,17 @@ func (app *App) plannedUpgrades() []upgrade {
 		// ADR-0040 anchor audit: task 3 -> 4 (anchor params initialized),
 		// hub 2 -> 3. New task store prefixes live inside the existing store.
 		{name: AnchorAuditUpgradeName},
+		// Verifier-panel audit: task 4 -> 5, hub 3 -> 4. Both migrations commit
+		// the unchanged parameter bodies again, because the commitments frame
+		// the new fields. New store prefixes live inside the existing stores.
+		{name: VerifierPanelUpgradeName},
 	}
 }
+
+// VerifierPanelUpgradeName is the governance plan name that activates the
+// binary carrying the Verifier-panel audit. The upgrade changes no parameter
+// value: every new parameter stays zero until governance sets it.
+const VerifierPanelUpgradeName = "v0.6.3-verifier-panel"
 
 // AnchorAuditUpgradeName is the governance plan name that activates the
 // ADR-0040 anchor audit. Nodes replaying earlier blocks run the previous binary

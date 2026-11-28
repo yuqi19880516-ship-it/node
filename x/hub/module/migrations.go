@@ -30,12 +30,16 @@ var _ migrationRegistrar = module.Configurator(nil)
 
 // migrations lists every in-place state migration of this module, keyed by the
 // version it migrates from. It is empty until the first post-genesis change.
-func migrations(_ keeper.Keeper) map[uint64]module.MigrationHandler {
+func migrations(k keeper.Keeper) map[uint64]module.MigrationHandler {
 	return map[uint64]module.MigrationHandler{
 		// 2 -> 3 (ADR-0040 anchor audit): anchor_reject / anchor_timeout role
 		// faults and absolute anchor slashes are new behavior with no stored
 		// state to rewrite.
 		2: func(sdk.Context) error { return nil },
+		// 3 -> 4 (Verifier-panel audit): the service parameter commitment
+		// frames the new fields, so the unchanged body is committed again as
+		// a new params version.
+		3: func(ctx sdk.Context) error { return k.RecommitParams(ctx) },
 	}
 }
 
