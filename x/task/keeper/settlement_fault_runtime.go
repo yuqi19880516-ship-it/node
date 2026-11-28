@@ -180,25 +180,41 @@ func (k Keeper) prepareSettlementFaults(
 			// retrievable are the same kind of omission: the smaller slash, no jail.
 			faultType, bps = hubtypes.FaultTypeAnchorTimeout, params.Verification.AnchorTimeoutSlashBps
 		}
-		applied, err := k.hubKeeper.ApplyTaskRoleFault(ctx, hubtypes.TaskRoleFaultFact{
+		fact := hubtypes.TaskRoleFaultFact{
 			SessionID: append([]byte(nil), inputs.Core.SessionId...), TaskID: append([]byte(nil), inputs.Core.TaskId...),
 			OperatorAddress: inputs.Assignment.WinnerWorker, Duty: shared.DutyWorker, FaultType: faultType,
 			ClassificationSource: shared.FailureClassificationSource_FAILURE_CLASSIFICATION_SOURCE_SETTLEMENT,
 			EvidenceDigest:       anchorRejectEvidenceDigest(sdkChainID(ctx), *inputs.Anchor),
 			SlashBps:             bps, Height: height,
 			RequestedAmount: anchorSlashAmount(inputs.Anchor.SlashableBond, bps),
-		})
+		}
+		// Per-model brake: a REJECT of the Worker's proof is counted, and its
+		// slash is withheld while the model's period is tripped. An omission
+		// (timeout, material not kept retrievable) is counted as an audit only
+		// and is never withheld.
+		withheld := false
+		if faultType == hubtypes.FaultTypeAnchorReject {
+			withheld, err = k.anchorBrakeWithholds(ctx, params, inputs.Core.ModelId, fact, height)
+		} else {
+			_, _, err = k.countAnchorAudit(ctx, params, inputs.Core.ModelId, height, false)
+		}
 		if err != nil {
 			return inputs, err
 		}
-		faults = append(faults, taskRoleFaultRecord{
-			faultID: append([]byte(nil), applied.FaultId...), operatorAddress: applied.OperatorAddress,
-			duty: applied.Duty, faultClass: applied.FaultClass,
-			classificationSource: applied.ClassificationSource,
-			evidenceDigest:       append([]byte(nil), applied.EvidenceDigest...),
-			jailDelta:            applied.JailDelta, status: applied.Status,
-		})
-		inputs.AnchorWorkerFaultID = append([]byte(nil), applied.FaultId...)
+		if !withheld {
+			applied, err := k.hubKeeper.ApplyTaskRoleFault(ctx, fact)
+			if err != nil {
+				return inputs, err
+			}
+			faults = append(faults, taskRoleFaultRecord{
+				faultID: append([]byte(nil), applied.FaultId...), operatorAddress: applied.OperatorAddress,
+				duty: applied.Duty, faultClass: applied.FaultClass,
+				classificationSource: applied.ClassificationSource,
+				evidenceDigest:       append([]byte(nil), applied.EvidenceDigest...),
+				jailDelta:            applied.JailDelta, status: applied.Status,
+			})
+			inputs.AnchorWorkerFaultID = append([]byte(nil), applied.FaultId...)
+		}
 	}
 	faultSummary, err := taskFaultSummaryHash(sdkChainID(ctx), inputs.Core.TaskId, faults)
 	if err != nil {

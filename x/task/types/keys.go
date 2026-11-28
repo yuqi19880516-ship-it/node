@@ -119,6 +119,11 @@ var (
 	ParamsHistoryKey        = MustVersionedStorePrefix("params_history", CurrentStoreSchemaVersion)
 	TaskParamsVersionKey    = MustVersionedStorePrefix("task_params_version", CurrentStoreSchemaVersion)
 	SessionParamsVersionKey = MustVersionedStorePrefix("session_params_version", CurrentStoreSchemaVersion)
+	// TaskInputTokenStatementKey holds the input token count the user attested
+	// for a task; TaskInputTokenRefusalKey marks a task whose receipt was
+	// refused under the input-token rule.
+	TaskInputTokenStatementKey = MustVersionedStorePrefix("task_input_token_statement", CurrentStoreSchemaVersion)
+	TaskInputTokenRefusalKey   = MustVersionedStorePrefix("task_input_token_refusal", CurrentStoreSchemaVersion)
 
 	// ---- Session / Order ----
 	SessionNonceKey                     = MustVersionedStorePrefix("session_nonce", CurrentStoreSchemaVersion)
@@ -150,6 +155,8 @@ var (
 	InferReceiptKey                        = MustVersionedStorePrefix("infer_receipt", CurrentStoreSchemaVersion)
 	AnchorAuditKey                         = MustVersionedStorePrefix("anchor_audit", CurrentStoreSchemaVersion)
 	AnchorValidatorVoteKey                 = MustVersionedStorePrefix("anchor_validator_vote", CurrentStoreSchemaVersion)
+	AnchorBrakeKey                         = MustVersionedStorePrefix("anchor_brake", CurrentStoreSchemaVersion)
+	AnchorBrakePendingKey                  = MustVersionedStorePrefix("anchor_brake_pending", CurrentStoreSchemaVersion)
 	AnchorVoteDelegationKey                = MustVersionedStorePrefix("anchor_vote_key", CurrentStoreSchemaVersion)
 	VerifierCandidateWindowKey             = MustVersionedStorePrefix("verifier_candidate_window", CurrentStoreSchemaVersion)
 	VerifierCandidateEligibilitySegmentKey = MustVersionedStorePrefix("verifier_candidate_eligibility_segment", CurrentStoreSchemaVersion)

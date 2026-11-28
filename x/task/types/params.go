@@ -89,6 +89,15 @@ const (
 	// historical value only: it is too short for a loaded Worker, see
 	// RecommendedAnchorProofWindowSeconds.
 	DefaultAnchorProofWindowBlocks = uint64(6_600)
+	// Suggested per-model brake rule for a chain that turns it on (it is off
+	// while anchor_brake_min_cases is zero): three REJECT verdicts in a
+	// settlement period, at three times the mean rate of the seven periods
+	// before it.
+	RecommendedAnchorBrakeMinCases        = uint32(3)
+	RecommendedAnchorBrakeMultipleX1000   = uint32(3_000)
+	RecommendedAnchorBrakeBaselinePeriods = uint32(7)
+	// MaxAnchorBrakeBaselinePeriods bounds the periods read for a baseline.
+	MaxAnchorBrakeBaselinePeriods = uint32(64)
 	// RecommendedAnchorOpenWindowSeconds is the time a Worker has to open the
 	// sampled rows: 15 minutes.
 	RecommendedAnchorOpenWindowSeconds = uint64(900)
@@ -665,6 +674,9 @@ func validateVerificationParams(p VerificationParamsV1) error {
 		if item.value > BasisPointsMaximum {
 			return fmt.Errorf("%s must be <= %d", item.name, BasisPointsMaximum)
 		}
+	}
+	if p.AnchorBrakeBaselinePeriods > MaxAnchorBrakeBaselinePeriods {
+		return fmt.Errorf("verification.anchor_brake_baseline_periods must be <= %d", MaxAnchorBrakeBaselinePeriods)
 	}
 	// A floor of zero would let the audit rate itself be zero (no margin, or an
 	// order worth nothing): such a task is never selected, so the floor would

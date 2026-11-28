@@ -743,8 +743,22 @@ func (k Keeper) applySettlementPlan(
 	if err != nil {
 		return types.TaskSettlementState{}, err
 	}
-	if err := k.settleWorkerQuota(ctx, inputs.Core, inputs.Assignment.WinnerWorker, settledValue, height); err != nil {
+	frozen, err := k.ParamsForTask(ctx, taskKey)
+	if err != nil {
+		return types.TaskSettlementState{}, err
+	}
+	if err := k.settleWorkerQuota(ctx, frozen, inputs.Core, inputs.Assignment.WinnerWorker, settledValue, height); err != nil {
 		return types.TaskSettlementState{}, errorsmod.Wrap(types.ErrInvariantBroken, err.Error())
+	}
+	if err := k.forgetInputTokenStatement(ctx, taskKey, frozen); err != nil {
+		return types.TaskSettlementState{}, err
+	}
+	if inputs.Anchor != nil && anchorAuditBinds(*inputs.Anchor) && inputs.Anchor.TaskVerdict != types.AnchorVerdictV1_ANCHOR_VERDICT_V1_REJECT {
+		// A selected audit that did not end in REJECT is counted for the
+		// per-model brake here; a REJECT was counted where its slash is decided.
+		if _, _, err := k.countAnchorAudit(ctx, frozen, inputs.Core.ModelId, height, false); err != nil {
+			return types.TaskSettlementState{}, err
+		}
 	}
 
 	core := inputs.Core

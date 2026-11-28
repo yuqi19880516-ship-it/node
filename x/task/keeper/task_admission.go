@@ -26,6 +26,10 @@ type dispatchOrderAdmission struct {
 	budget     types.TaskBudgetState
 	delegated  bool
 	nextSpent  uint64
+	// signed is the order as signed and signer the address recovered from its
+	// signature; the input token attestation must come from the same key.
+	signed types.SignedOrderV2
+	signer []byte
 }
 
 // prepareDispatchOrder validates user authority and derives every Task-owned fact
@@ -110,6 +114,7 @@ func (k Keeper) prepareDispatchOrder(ctx context.Context, signed types.SignedOrd
 	}
 	result = dispatchOrderAdmission{
 		order: order, taskID: taskID, taskHash: taskHash, stream: stream, profile: profile, builderSet: set, delegated: delegated, nextSpent: nextSpent,
+		signed: result.signed, signer: result.signer,
 		core: types.TaskCoreState{
 			TaskId: taskID[:], UserAddress: owner, SessionId: bytes.Clone(order.SessionId), OrderSequence: order.OrderSequence,
 			AcceptedTaskHash: taskHash[:], AcceptedInputHash: bytes.Clone(order.InputHash), AcceptedOrderOpeningHash: openingHash[:],

@@ -1087,6 +1087,9 @@ func (k Keeper) ExportGenesis(ctx context.Context) (*types.GenesisState, error) 
 	if genesis.AnchorVoteKeys, err = collectMapValues(ctx, k.AnchorVoteKey); err != nil {
 		return nil, err
 	}
+	if genesis.AnchorBrakes, err = collectMapValues(ctx, k.AnchorBrake); err != nil {
+		return nil, err
+	}
 	if genesis.TaskFailureClasses, err = collectMapValues(ctx, k.TaskFailureClass); err != nil {
 		return nil, err
 	}
@@ -1285,6 +1288,24 @@ func (k Keeper) initGenesisAnchor(ctx context.Context, genesis types.GenesisStat
 			return fmt.Errorf("duplicate anchor audit")
 		}
 		if err := k.AnchorAudit.Set(ctx, taskID, state); err != nil {
+			return err
+		}
+	}
+	for _, row := range genesis.AnchorBrakes {
+		modelID, err := genesisHashKey("anchor brake model_id", row.ModelId)
+		if err != nil {
+			return err
+		}
+		key := collections.Join(modelID, row.Period)
+		if has, err := k.AnchorBrake.Has(ctx, key); err != nil {
+			return err
+		} else if has {
+			return fmt.Errorf("duplicate anchor brake row")
+		}
+		// The withheld slashes themselves are not part of the exported
+		// genesis, so an imported row has none left to resolve.
+		row.PendingEffects = 0
+		if err := k.AnchorBrake.Set(ctx, key, row); err != nil {
 			return err
 		}
 	}

@@ -48,9 +48,13 @@ type Keeper struct {
 
 	// Parameter bodies and bindings are primary; counts and time indexes rebuild
 	// from them at Genesis import. Current bodies are never duplicated in history.
-	ParamsHistory              collections.Map[uint64, types.TaskParamsHistoryState]
-	TaskParamsVersion          collections.Map[types.TaskKey, uint64]
-	SessionParamsVersion       collections.Map[types.SessionStoreKey, uint64]
+	ParamsHistory        collections.Map[uint64, types.TaskParamsHistoryState]
+	TaskParamsVersion    collections.Map[types.TaskKey, uint64]
+	SessionParamsVersion collections.Map[types.SessionStoreKey, uint64]
+	// TaskInputTokenStatement and TaskInputTokenRefusal belong to the
+	// input-token rule; both are empty while input_token_tolerance is zero.
+	TaskInputTokenStatement    collections.Map[types.TaskKey, uint64]
+	TaskInputTokenRefusal      collections.KeySet[types.TaskKey]
 	ParamsVersionRefCount      collections.Map[uint64, uint64]
 	ParamsHistoryByHeightIndex collections.KeySet[collections.Pair[uint64, uint64]]
 	ParamsHistoryPruneIndex    collections.KeySet[collections.Pair[uint64, uint64]]
@@ -125,10 +129,14 @@ type Keeper struct {
 	// with a frozen fixed-length eligibility bitmap plus dense rank members.
 	// Commit / ResultReceipt / FullResultReveal are keyed by the commit_key,
 	// which is the only registered derivation and the only one that binds chain_id.
-	InferReceipt                        collections.Map[types.TaskKey, internaltypes.InferReceiptStoreState]
-	AnchorAudit                         collections.Map[types.TaskKey, types.AnchorAuditState]
-	AnchorValidatorVote                 collections.Map[collections.Pair[types.TaskKey, []byte], types.AnchorValidatorVoteState]
-	AnchorVoteKey                       collections.Map[[]byte, types.AnchorVoteKeyState]
+	InferReceipt        collections.Map[types.TaskKey, internaltypes.InferReceiptStoreState]
+	AnchorAudit         collections.Map[types.TaskKey, types.AnchorAuditState]
+	AnchorValidatorVote collections.Map[collections.Pair[types.TaskKey, []byte], types.AnchorValidatorVoteState]
+	AnchorVoteKey       collections.Map[[]byte, types.AnchorVoteKeyState]
+	// AnchorBrake is the per-model, per-period REJECT statistic; AnchorBrakePending
+	// holds the Worker slashes withheld while a brake is tripped, by task.
+	AnchorBrake                         collections.Map[collections.Pair[types.Hash32Key, uint64], types.AnchorBrakeState]
+	AnchorBrakePending                  collections.Map[collections.Triple[types.Hash32Key, uint64, types.Hash32Key], internaltypes.AnchorBrakePendingEffect]
 	VerifierCandidateWindow             collections.Map[types.VerifyRoundKey, types.VerifierCandidateWindowState]
 	VerifierCandidateEligibilitySegment collections.Map[types.VerifyRoundSegmentKey, types.VerifierCandidateEligibilitySegmentState]
 	VerifierCandidateWindowMember       collections.Map[types.VerifyRoundSegmentKey, internaltypes.VerifierWindowMemberStoreState]
@@ -258,6 +266,8 @@ func NewKeeper(storeService corestore.KVStoreService, transientStoreService core
 		ParamsHistoryPruneIndex:       collections.NewKeySet(sb, types.ParamsHistoryPruneIndexKey, "params_history_prune", collections.PairKeyCodec(collections.Uint64Key, collections.Uint64Key)),
 		ParamsHistory:                 collections.NewMap(sb, types.ParamsHistoryKey, "params_history", collections.Uint64Key, codec.CollValue[types.TaskParamsHistoryState](cdc)),
 		TaskParamsVersion:             collections.NewMap(sb, types.TaskParamsVersionKey, "task_params_version", types.Hash32KeyCodec, collections.Uint64Value),
+		TaskInputTokenStatement:       collections.NewMap(sb, types.TaskInputTokenStatementKey, "task_input_token_statement", types.Hash32KeyCodec, collections.Uint64Value),
+		TaskInputTokenRefusal:         collections.NewKeySet(sb, types.TaskInputTokenRefusalKey, "task_input_token_refusal", types.Hash32KeyCodec),
 		SessionParamsVersion:          collections.NewMap(sb, types.SessionParamsVersionKey, "session_params_version", types.Hash32KeyCodec, collections.Uint64Value),
 
 		SessionNonce:                     collections.NewMap(sb, types.SessionNonceKey, "session_nonce", types.AddrKeyCodec, codec.CollValue[internaltypes.SessionNonceStoreState](cdc)),
@@ -313,6 +323,8 @@ func NewKeeper(storeService corestore.KVStoreService, transientStoreService core
 		AnchorAudit:                         collections.NewMap(sb, types.AnchorAuditKey, "anchor_audit", types.Hash32KeyCodec, codec.CollValue[types.AnchorAuditState](cdc)),
 		AnchorValidatorVote:                 collections.NewMap(sb, types.AnchorValidatorVoteKey, "anchor_validator_vote", collections.PairKeyCodec(types.Hash32KeyCodec, collections.BytesKey), codec.CollValue[types.AnchorValidatorVoteState](cdc)),
 		AnchorVoteKey:                       collections.NewMap(sb, types.AnchorVoteDelegationKey, "anchor_vote_key", collections.BytesKey, codec.CollValue[types.AnchorVoteKeyState](cdc)),
+		AnchorBrake:                         collections.NewMap(sb, types.AnchorBrakeKey, "anchor_brake", collections.PairKeyCodec(types.Hash32KeyCodec, collections.Uint64Key), codec.CollValue[types.AnchorBrakeState](cdc)),
+		AnchorBrakePending:                  collections.NewMap(sb, types.AnchorBrakePendingKey, "anchor_brake_pending", collections.TripleKeyCodec(types.Hash32KeyCodec, collections.Uint64Key, types.Hash32KeyCodec), codec.CollValue[internaltypes.AnchorBrakePendingEffect](cdc)),
 		VerifierCandidateWindow:             collections.NewMap(sb, types.VerifierCandidateWindowKey, "verifier_candidate_window", verifyRoundKeyCodec, codec.CollValue[types.VerifierCandidateWindowState](cdc)),
 		VerifierCandidateEligibilitySegment: collections.NewMap(sb, types.VerifierCandidateEligibilitySegmentKey, "verifier_candidate_eligibility_segment", verifyRoundSegmentKeyCodec, codec.CollValue[types.VerifierCandidateEligibilitySegmentState](cdc)),
 		VerifierCandidateWindowMember:       collections.NewMap(sb, types.VerifierCandidateWindowMemberKey, "verifier_candidate_window_member", verifyRoundSegmentKeyCodec, codec.CollValue[internaltypes.VerifierWindowMemberStoreState](cdc)),

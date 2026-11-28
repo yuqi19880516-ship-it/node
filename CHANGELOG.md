@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- **Consensus-breaking: registration hash in the Profile, input-token rule,
+  per-model brake.** Three rules of the Verifier-panel contract. Each is off
+  unless a Profile or a parameter turns it on.
+  - **Registration hash.** The Worker anchor entry of a Profile's
+    `required_infer_evidence` may carry `registration_hash`: the sha256 of the
+    canonical `registration.json` its anchor audit is verified against. It is
+    accepted only on that entry, as a non-zero 32-byte value, in
+    `register-model-profile` JSON (`"registration_hash": "0x…"`) as well. An
+    entry that sets it is framed with it as a fourth field, so the Profile's
+    `evidence_schema_hash`, execution snapshot hash and registration body
+    commit to it; an entry without it is framed and hashed exactly as before.
+    `Query/Profile` returns it inside the evidence schema, and the Task keeper
+    exposes `AnchorRegistrationHash(model_id, profile_version)`.
+  - **Input-token rule** (`input_token_tolerance`, default 0 = off).
+    `MsgRecordDispatch.input_tokens_attestations` may carry the user's signed
+    statement of an order's input token count. With a non-zero tolerance in
+    the parameters the task is recorded under, a statement that names the
+    order, uses the order's signature scheme and signature chain id, and
+    verifies as EIP-712 typed data (domain `TrueOpen Order Input Tokens`
+    version `1`, type `OrderInputTokens(string chainId,bytes32 orderDigest,uint64 inputTokenCount,bytes32 attestationDigest)`)
+    under the key that signed the order is kept with the task. A record
+    without a statement, with two statements for one order, or with one that
+    does not verify is accepted unchanged and the rule does not apply to that
+    task; no dispatch record is refused and nobody is faulted for it. A
+    takeover entry never carries one.
+    A receipt of a task with a statement is refused when the prompt token
+    count read from its Worker token commitment (`(size - 8) / 4 - generated`)
+    is below `statement - tolerance`: `MsgSubmitInferReceipt` answers with
+    status `REJECTED` and accepts nothing. The Worker may send another receipt
+    before the inference deadline. If the deadline passes after such a
+    refusal, the task ends as a refunded failure without the inference-timeout
+    fault. New store prefixes `task_input_token_statement` and
+    `task_input_token_refusal`; neither is part of the exported genesis.
+  - **Per-model brake** (`anchor_brake_min_cases`, default 0 = off; needs
+    `batch_settlement_period_blocks`). Per model and settlement period the
+    chain counts the selected anchor audits settled (`audited`) and those that
+    ended in a REJECT of the Worker's proof (`cases`; a missed deadline or
+    unavailable material is an audit, not a case). The period trips when
+    `cases >= anchor_brake_min_cases` and its rate is at least
+    `anchor_brake_multiple_x1000 / 1000` times the mean rate of the preceding
+    `anchor_brake_baseline_periods` periods that had audits and did not trip
+    (the case count alone when there is none). From the tripping case on, the
+    Worker slash of such a REJECT is withheld; the task still fails and the
+    user is still refunded. `MsgReleaseAnchorBrake`, signed by the module
+    authority, applies or discards the withheld slashes (at most 256 per
+    message; repeat to continue). Later REJECT slashes of that period follow
+    the release. `Query/AnchorBrake` returns the row (`period = 0` is the
+    current period). Events `EventAnchorBrakeTripped` and
+    `EventAnchorBrakeReleased`. Rows are exported in `anchor_brakes`; the
+    withheld slashes are not part of the exported genesis.
+    `anchor_brake_baseline_periods` is bounded at 64. Suggested values are
+    published as `RecommendedAnchorBrakeMinCases` (3),
+    `RecommendedAnchorBrakeMultipleX1000` (3000) and
+    `RecommendedAnchorBrakeBaselinePeriods` (7).
 - **Consensus-breaking: Worker bond floor, order quota and unbonding
   conditions.** Four Hub service parameters that were carried but not read are
   now applied. Each is off at its zero default, and a chain that sets none of

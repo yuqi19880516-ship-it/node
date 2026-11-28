@@ -47,11 +47,7 @@ func (k Keeper) reserveWorkerQuota(ctx context.Context, operator string, orderVa
 // settleWorkerQuota releases a final task's reservation down to its actual
 // order value. The period is the one the record height fell in under the
 // task's own frozen parameters, so a later parameter change cannot move it.
-func (k Keeper) settleWorkerQuota(ctx context.Context, core types.TaskCoreState, worker string, actual, height uint64) error {
-	params, err := k.ParamsForTask(ctx, types.NewTaskKey(core.TaskId))
-	if err != nil {
-		return err
-	}
+func (k Keeper) settleWorkerQuota(ctx context.Context, params types.TaskParamsV1, core types.TaskCoreState, worker string, actual, height uint64) error {
 	period, ok := hubtypes.WorkerSettlementPeriod(core.CreatedHeight, params.Verification.BatchSettlementPeriodBlocks)
 	if !ok || worker == "" {
 		return nil
