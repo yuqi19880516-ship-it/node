@@ -67,11 +67,15 @@ func marshalModelProfileProjectionJSON(t *testing.T, profile shared.ModelProfile
 	}
 	evidenceRequirements := make([]any, len(profile.VerificationProfile.EvidenceSchema.RequiredInferEvidence))
 	for index, requirement := range profile.VerificationProfile.EvidenceSchema.RequiredInferEvidence {
-		evidenceRequirements[index] = map[string]any{
+		entry := map[string]any{
 			"commitment_schema_version": requirement.CommitmentSchemaVersion,
 			"evidence_kind":             evidenceKindName(requirement.EvidenceKind),
 			"max_encoded_size_bytes":    requirement.MaxEncodedSizeBytes,
 		}
+		if len(requirement.RegistrationHash) != 0 {
+			entry["registration_hash"] = testHashHex(requirement.RegistrationHash)
+		}
+		evidenceRequirements[index] = entry
 	}
 	projection := map[string]any{
 		"batch_verification": map[string]any{

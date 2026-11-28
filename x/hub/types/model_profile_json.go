@@ -93,6 +93,8 @@ type modelProfileEvidenceRequirementJSON struct {
 	EvidenceKind            string `json:"evidence_kind"`
 	CommitmentSchemaVersion uint32 `json:"commitment_schema_version"`
 	MaxEncodedSizeBytes     uint64 `json:"max_encoded_size_bytes"`
+	// RegistrationHash is optional and only valid on WORKER_ANCHOR_OPENING.
+	RegistrationHash string `json:"registration_hash,omitempty"`
 }
 
 type modelProfileMetricJSON struct {
@@ -185,6 +187,12 @@ func ParseModelProfileProjectionJSON(data []byte) (shared.ModelProfileProjection
 		evidenceRequirements[index] = shared.InferEvidenceRequirementV1{
 			EvidenceKind: kind, CommitmentSchemaVersion: requirement.CommitmentSchemaVersion,
 			MaxEncodedSizeBytes: requirement.MaxEncodedSizeBytes,
+		}
+		if requirement.RegistrationHash != "" {
+			evidenceRequirements[index].RegistrationHash, err = decodeModelProfileHash("registration_hash", requirement.RegistrationHash, false)
+			if err != nil {
+				return shared.ModelProfileProjection{}, err
+			}
 		}
 	}
 
@@ -363,7 +371,11 @@ func validateModelProfileJSONShape(data []byte) error {
 		return fmt.Errorf("verification_profile.evidence_schema.required_infer_evidence must be an array")
 	}
 	for index, requirement := range evidenceRequirements {
-		if err := requireModelProfileFields(requirement, "commitment_schema_version", "evidence_kind", "max_encoded_size_bytes"); err != nil {
+		fields := []string{"commitment_schema_version", "evidence_kind", "max_encoded_size_bytes"}
+		if _, bound := requirement["registration_hash"]; bound {
+			fields = append(fields, "registration_hash")
+		}
+		if err := requireModelProfileFields(requirement, fields...); err != nil {
 			return fmt.Errorf("verification_profile.evidence_schema.required_infer_evidence[%d]: %w", index, err)
 		}
 	}
