@@ -68,6 +68,12 @@ func (s panelHubStub) SetWorkerDispatchPause(_ context.Context, operator string,
 	return after, after != before, nil
 }
 
+// SettleWorkerQuota accepts the quota release of a settled task: the panel
+// tests run with a settlement period and no quota.
+func (panelHubStub) SettleWorkerQuota(context.Context, string, uint64, uint64, uint64, uint64) error {
+	return nil
+}
+
 func (s panelHubStub) AcquirePendingStageDuty(_ context.Context, operator string) error {
 	s.state.duties[operator]++
 	return nil
@@ -192,7 +198,15 @@ func newAnchorPanelFixtureBeforeProof(t *testing.T, bond uint64, candidates int)
 // task's parameters adjusted by tune before the task freezes them.
 func newTunedAnchorPanelFixture(t *testing.T, bond uint64, candidates int, tune func(*types.TaskParamsV1), prepare ...func(*anchorOnlyFixture)) *anchorPanelFixture {
 	t.Helper()
-	base := newAnchorOnlyFixture(t, bond, true)
+	return newAnchorPanelFixtureWithSchema(t, bond, candidates, shared.WorkerAnchorCommitmentSchemaVersionV1, tune, prepare...)
+}
+
+// newAnchorPanelFixtureWithSchema is newTunedAnchorPanelFixture with the
+// commitment schema version of the Profile's anchor requirement chosen by the
+// caller: version 2 is sampled in two steps.
+func newAnchorPanelFixtureWithSchema(t *testing.T, bond uint64, candidates int, schemaVersion uint32, tune func(*types.TaskParamsV1), prepare ...func(*anchorOnlyFixture)) *anchorPanelFixture {
+	t.Helper()
+	base := newAnchorOnlyFixtureWithSchema(t, bond, true, schemaVersion)
 	state := &panelHubState{
 		slots: map[uint32]string{0: base.worker}, notAudit: map[string]bool{}, stale: map[string]bool{}, lowBond: map[string]bool{},
 		waiting: map[string]bool{}, tombstoned: map[string]bool{}, score: map[string]uint64{}, duties: map[string]int{},

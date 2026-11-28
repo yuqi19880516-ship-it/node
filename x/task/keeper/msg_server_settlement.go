@@ -760,11 +760,32 @@ func (k Keeper) applySettlementPlan(
 	if err := k.releaseTaskLiabilitiesForSettlement(ctx, inputs, height); err != nil {
 		return types.TaskSettlementState{}, err
 	}
-	if err := k.closeWorkerBatchTask(ctx, taskKey, held, inputs.Anchor != nil, anchorForfeitureOf(inputs.Anchor), height); err != nil {
+	if err := k.closeWorkerBatchTask(ctx, taskKey, held, inputs.Anchor != nil, anchorForfeitureOf(inputs.Anchor), inputs.AnchorSlashWithheld, height); err != nil {
 		return types.TaskSettlementState{}, err
 	}
 	if err := k.payAnchorReauditFee(ctx, inputs, settlementID, height); err != nil {
 		return types.TaskSettlementState{}, errorsmod.Wrap(types.ErrInvariantBroken, err.Error())
+	}
+	settledValue, err := settledOrderValue(plan, inputs.Budget)
+	if err != nil {
+		return types.TaskSettlementState{}, err
+	}
+	frozen, err := k.ParamsForTask(ctx, taskKey)
+	if err != nil {
+		return types.TaskSettlementState{}, err
+	}
+	if err := k.settleWorkerQuota(ctx, frozen, inputs.Core, inputs.Assignment.WinnerWorker, settledValue, height); err != nil {
+		return types.TaskSettlementState{}, errorsmod.Wrap(types.ErrInvariantBroken, err.Error())
+	}
+	if err := k.forgetInputTokenStatement(ctx, taskKey, frozen); err != nil {
+		return types.TaskSettlementState{}, err
+	}
+	if inputs.Anchor != nil && anchorAuditBinds(*inputs.Anchor) && inputs.Anchor.TaskVerdict != types.AnchorVerdictV1_ANCHOR_VERDICT_V1_REJECT {
+		// A selected audit that did not end in REJECT is counted for the
+		// per-model brake here; a REJECT was counted where its slash is decided.
+		if _, _, err := k.countAnchorAudit(ctx, frozen, inputs.Core.ModelId, height, false); err != nil {
+			return types.TaskSettlementState{}, err
+		}
 	}
 
 	core := inputs.Core

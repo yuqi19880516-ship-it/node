@@ -35,17 +35,21 @@ func (app *App) plannedUpgrades() []upgrade {
 		// ADR-0040 anchor audit: task 3 -> 4 (anchor params initialized),
 		// hub 2 -> 3. New task store prefixes live inside the existing store.
 		{name: AnchorAuditUpgradeName},
-		// Verifier-panel audit: task 4 -> 5, hub 3 -> 4. Both migrations commit
-		// the unchanged parameter bodies again, because the commitments frame
-		// the new fields. New store prefixes live inside the existing stores.
-		{name: VerifierPanelUpgradeName},
+		// Verifier-panel audit and two-step anchor sampling, one upgrade:
+		// task 4 -> 5 and hub 3 -> 4. Both migrations commit the parameter
+		// bodies again, because the commitments frame the new fields. New
+		// store prefixes live inside the existing stores.
+		{name: TwoStepSamplingUpgradeName},
 	}
 }
 
-// VerifierPanelUpgradeName is the governance plan name that activates the
-// binary carrying the Verifier-panel audit. The upgrade changes no parameter
-// value: every new parameter stays zero until governance sets it.
-const VerifierPanelUpgradeName = "v0.6.3-verifier-panel"
+// TwoStepSamplingUpgradeName is the governance plan name of the upgrade to the
+// binary that carries the Verifier-panel audit and two-step anchor sampling.
+// Nothing switches on at the upgrade: every new parameter stays zero until
+// governance sets it, and two-step sampling starts only when its two
+// parameters are set, the VRF beacon is required and a version-2 Profile is
+// registered.
+const TwoStepSamplingUpgradeName = "v0.6.4-two-step-sampling"
 
 // AnchorAuditUpgradeName is the governance plan name that activates the
 // ADR-0040 anchor audit. Nodes replaying earlier blocks run the previous binary

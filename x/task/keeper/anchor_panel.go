@@ -81,31 +81,6 @@ func anchorPanelDueVerdict(state types.AnchorAuditState, height uint64) (types.A
 	return state.ProvisionalVerdict, types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_VERIFIER_PANEL, true
 }
 
-// anchorPanelVerdictWindowBlocks is how long after the proof deadline a panel
-// audit may take under the frozen parameters: the first round, its
-// re-assignment, the publication window and a re-audit, plus the ordinary
-// verdict window as slack for deferred sweeps.
-func anchorPanelVerdictWindowBlocks(params types.TaskParamsV1) (uint64, bool) {
-	span, ok := anchorPanelSelectionSpanBlocks(params)
-	if !ok {
-		return 0, false
-	}
-	total := params.Verification.AnchorVerdictWindowBlocks
-	parts := []uint64{span, span, span, params.Verification.AnchorPublicationWindowBlocks}
-	if late := params.Verification.AnchorLateWindowBlocks; late != 0 {
-		// The late window and the panel round a late submission opens.
-		parts = append(parts, late, span)
-	}
-	for _, add := range parts {
-		next, overflow := checkedHeightAdd(total, add)
-		if overflow {
-			return 0, false
-		}
-		total = next
-	}
-	return total, true
-}
-
 // anchorPanelFee is the fee of one panel round of a task: the share of the
 // price a verification round takes. It is recorded on each round; it is paid
 // out with the batch settlement, not here.

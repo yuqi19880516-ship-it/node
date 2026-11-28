@@ -1,6 +1,9 @@
 package types
 
-import "fmt"
+import (
+	"bytes"
+	"fmt"
+)
 
 const (
 	EvidenceSchemaVersionV1              = uint32(1)
@@ -8,6 +11,11 @@ const (
 	WorkerTokenCommitmentSchemaVersionV1 = uint32(1)
 	// WorkerAnchorCommitmentSchemaVersionV1 is the first anchor-commitment schema (ADR-0040).
 	WorkerAnchorCommitmentSchemaVersionV1 = uint32(1)
+	// WorkerAnchorCommitmentSchemaVersionV2 marks a Profile whose anchor audit
+	// uses two-step sampling: the selected Worker records the hash of its
+	// per-row commitment list before the positions are drawn. The receipt
+	// commitment itself is encoded as in V1.
+	WorkerAnchorCommitmentSchemaVersionV2 = uint32(2)
 	MaxEvidenceEncodedSizeBytesV1         = uint64(1 << 40)
 )
 
@@ -52,6 +60,9 @@ func ValidateEvidenceSchemaV1(schema EvidenceSchemaV1) error {
 		if requirement.MaxEncodedSizeBytes == 0 || requirement.MaxEncodedSizeBytes > MaxEvidenceEncodedSizeBytesV1 {
 			return fmt.Errorf("required_infer_evidence[%d] max_encoded_size_bytes must be in 1..%d", index, MaxEvidenceEncodedSizeBytesV1)
 		}
+		if err := validateEvidenceRegistrationHash(requirement); err != nil {
+			return fmt.Errorf("required_infer_evidence[%d] %w", index, err)
+		}
 		previous = requirement.EvidenceKind
 	}
 	return nil
@@ -80,11 +91,48 @@ func CanonicalInferEvidenceRequirementTypedFrameV1(requirement InferEvidenceRequ
 	if requirement.MaxEncodedSizeBytes == 0 || requirement.MaxEncodedSizeBytes > MaxEvidenceEncodedSizeBytesV1 {
 		return canonicalFrameErrorV1(fmt.Errorf("max_encoded_size_bytes must be in 1..%d", MaxEvidenceEncodedSizeBytesV1))
 	}
-	return FlatCanonicalFrameV1(
+	if err := validateEvidenceRegistrationHash(requirement); err != nil {
+		return canonicalFrameErrorV1(err)
+	}
+	fields := [][]byte{
 		EnumBE(uint32(requirement.EvidenceKind)),
 		Uint32BE(requirement.CommitmentSchemaVersion),
 		Uint64BE(requirement.MaxEncodedSizeBytes),
-	)
+	}
+	if len(requirement.RegistrationHash) != 0 {
+		// An entry without a registration hash keeps the three-field frame it
+		// always had; an entry that sets one commits to it as a fourth field.
+		fields = append(fields, requirement.RegistrationHash)
+	}
+	return FlatCanonicalFrameV1(fields...)
+}
+
+// validateEvidenceRegistrationHash admits a registration hash only on the
+// Worker anchor commitment, as a non-zero Hash32.
+func validateEvidenceRegistrationHash(requirement InferEvidenceRequirementV1) error {
+	if len(requirement.RegistrationHash) == 0 {
+		return nil
+	}
+	if requirement.EvidenceKind != EvidenceKind_EVIDENCE_KIND_WORKER_ANCHOR_OPENING {
+		return fmt.Errorf("registration_hash is only valid on the Worker anchor commitment")
+	}
+	if len(requirement.RegistrationHash) != 32 || bytes.Equal(requirement.RegistrationHash, make([]byte, 32)) {
+		return fmt.Errorf("registration_hash must be a non-zero Hash32")
+	}
+	return nil
+}
+
+// AnchorRegistrationHash returns the registration hash a Profile's evidence
+// schema binds its anchor audit to: the sha256 of the canonical
+// registration.json of the verification registration. It is nil when the
+// schema requires no anchor commitment or sets no hash.
+func AnchorRegistrationHash(schema EvidenceSchemaV1) []byte {
+	for _, requirement := range schema.RequiredInferEvidence {
+		if requirement.EvidenceKind == EvidenceKind_EVIDENCE_KIND_WORKER_ANCHOR_OPENING && len(requirement.RegistrationHash) != 0 {
+			return bytes.Clone(requirement.RegistrationHash)
+		}
+	}
+	return nil
 }
 
 func CanonicalEvidenceSchemaFrameV1(schema EvidenceSchemaV1) ([]byte, error) {
@@ -132,4 +180,23 @@ func CanonicalEvidenceSchemaTypedFrameV1(schema EvidenceSchemaV1) CanonicalFrame
 		Raw(Uint32BE(schema.SchemaVersion)).
 		Nested(CanonicalRepeatedFramesV1(elements)).
 		Build()
+}
+
+// IsWorkerAnchorCommitmentSchemaVersion reports whether version is an anchor
+// commitment schema this chain admits.
+func IsWorkerAnchorCommitmentSchemaVersion(version uint32) bool {
+	return version == WorkerAnchorCommitmentSchemaVersionV1 || version == WorkerAnchorCommitmentSchemaVersionV2
+}
+
+// AnchorTwoStepSamplingRequired reports whether an evidence schema asks for
+// two-step sampling of the anchor audit: its anchor requirement carries
+// commitment schema version 2. found is false when the schema has no anchor
+// requirement at all.
+func AnchorTwoStepSamplingRequired(schema EvidenceSchemaV1) (twoStep bool, found bool) {
+	for _, requirement := range schema.RequiredInferEvidence {
+		if requirement.EvidenceKind == EvidenceKind_EVIDENCE_KIND_WORKER_ANCHOR_OPENING {
+			return requirement.CommitmentSchemaVersion == WorkerAnchorCommitmentSchemaVersionV2, true
+		}
+	}
+	return false, false
 }

@@ -41,6 +41,9 @@ type settlementInputs struct {
 	Anchor *types.AnchorAuditState
 	// AnchorWorkerFaultID is the Worker role fault applied for a REJECT verdict.
 	AnchorWorkerFaultID []byte
+	// AnchorSlashWithheld reports that the per-model brake withheld the slash
+	// of this settlement's REJECT; the batch forfeiture waits with it.
+	AnchorSlashWithheld bool
 	// BatchHeldWorkerNet is the Worker's net of this settlement that is held
 	// for its batch instead of being credited now. Zero outside batch settlement.
 	BatchHeldWorkerNet uint64

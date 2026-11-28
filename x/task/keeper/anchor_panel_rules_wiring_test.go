@@ -323,7 +323,7 @@ func TestSettlementDoesNotDependOnTheSweep(t *testing.T) {
 // rounds, the publication window and a re-audit.
 func TestPanelVerdictDeadlineCoversTheSchedule(t *testing.T) {
 	f := newAnchorPanelFixtureBeforeProof(t, 4_000, 6)
-	span, ok := anchorPanelSelectionSpanBlocks(f.params)
+	span, ok := f.params.AnchorPanelRoundSpanBlocks()
 	require.True(t, ok)
 	require.Equal(t, uint64(1+1+1+1)+panelVoteWindow+1, span)
 	want := f.audit.ProofDeadlineHeight + f.params.Verification.AnchorVerdictWindowBlocks + 3*span + panelPublication

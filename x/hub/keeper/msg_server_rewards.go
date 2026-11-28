@@ -59,6 +59,9 @@ func (m msgServer) UpdateHubParams(ctx context.Context, req *types.MsgUpdateHubP
 	if err := validateVrfActivationHeight(current, req.Params, sdkContextHeight(sdk.UnwrapSDKContext(ctx))); err != nil {
 		return nil, err
 	}
+	if err := m.k.validateVrfRequirementKeptForTwoStep(ctx, current, req.Params, sdkContextHeight(sdk.UnwrapSDKContext(ctx))); err != nil {
+		return nil, err
+	}
 	if err := m.validateCrossModuleSafetyWindows(ctx, req.Params); err != nil {
 		return nil, err
 	}

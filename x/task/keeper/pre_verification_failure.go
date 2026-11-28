@@ -154,7 +154,17 @@ func (k Keeper) applyPreVerificationFailure(
 		return preVerificationFailureResult{}, err
 	}
 	faults := []hubtypes.RoleFaultState{}
-	if kind == types.DeadlineKindV1_DEADLINE_KIND_V1_WORKER_INFER {
+	frozen, err := k.ParamsForTask(ctx, taskKey)
+	if err != nil {
+		return preVerificationFailureResult{}, err
+	}
+	// A Worker whose receipt was refused under the input-token rule answered
+	// in time: the task still ends as a refunded failure, without a fault.
+	receiptRefused, err := k.inputTokenRefusalStands(ctx, taskKey, frozen)
+	if err != nil {
+		return preVerificationFailureResult{}, err
+	}
+	if kind == types.DeadlineKindV1_DEADLINE_KIND_V1_WORKER_INFER && !receiptRefused {
 		if assignment.WinnerWorker == "" {
 			return preVerificationFailureResult{}, fmt.Errorf("worker timeout has no assigned Worker")
 		}
@@ -328,6 +338,12 @@ func (k Keeper) applyPreVerificationFailure(
 	if err := k.releaseFailedTaskResponsibilities(ctx, core, currentHeight); err != nil {
 		return preVerificationFailureResult{}, err
 	}
+	if err := k.settleWorkerQuota(ctx, frozen, core, assignment.WinnerWorker, 0, currentHeight); err != nil {
+		return preVerificationFailureResult{}, err
+	}
+	if err := k.forgetInputTokenStatement(ctx, taskKey, frozen); err != nil {
+		return preVerificationFailureResult{}, err
+	}
 	if err := k.RemoveRoleActiveTaskIndexes(ctx, core.TaskId); err != nil {
 		return preVerificationFailureResult{}, err
 	}
@@ -395,7 +411,7 @@ func (k Keeper) applyPreVerificationFailure(
 	}
 	// A task that ends here earned its Worker nothing; its batch only has to
 	// know that it is final.
-	if err := k.closeWorkerBatchTask(ctx, taskKey, 0, false, types.WorkerBatchStatusV1_WORKER_BATCH_STATUS_V1_UNSPECIFIED, currentHeight); err != nil {
+	if err := k.closeWorkerBatchTask(ctx, taskKey, 0, false, types.WorkerBatchStatusV1_WORKER_BATCH_STATUS_V1_UNSPECIFIED, false, currentHeight); err != nil {
 		return preVerificationFailureResult{}, err
 	}
 	cleanupHeight, overflow := checkedHeightAdd(

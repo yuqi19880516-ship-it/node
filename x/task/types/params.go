@@ -89,6 +89,15 @@ const (
 	// historical value only: it is too short for a loaded Worker, see
 	// RecommendedAnchorProofWindowSeconds.
 	DefaultAnchorProofWindowBlocks = uint64(6_600)
+	// Suggested per-model brake rule for a chain that turns it on (it is off
+	// while anchor_brake_min_cases is zero): three REJECT verdicts in a
+	// settlement period, at three times the mean rate of the seven periods
+	// before it.
+	RecommendedAnchorBrakeMinCases        = uint32(3)
+	RecommendedAnchorBrakeMultipleX1000   = uint32(3_000)
+	RecommendedAnchorBrakeBaselinePeriods = uint32(7)
+	// MaxAnchorBrakeBaselinePeriods bounds the periods read for a baseline.
+	MaxAnchorBrakeBaselinePeriods = uint32(64)
 	// RecommendedAnchorOpenWindowSeconds is the time a Worker has to open the
 	// sampled rows: 15 minutes.
 	RecommendedAnchorOpenWindowSeconds = uint64(900)
@@ -122,6 +131,42 @@ const (
 	RecommendedAnchorOpenWindowBlocks    = RecommendedAnchorOpenWindowSeconds * 1000 / AnchorWindowReferenceBlockMillis
 	RecommendedAnchorProofWindowBlocks   = RecommendedAnchorProofWindowSeconds * 1000 / AnchorWindowReferenceBlockMillis
 	RecommendedAnchorVerdictWindowBlocks = RecommendedAnchorVerdictWindowSeconds * 1000 / AnchorWindowReferenceBlockMillis
+	// Two-step anchor sampling. There is no Default* value for either
+	// parameter: both are zero unless a network sets them, and zero leaves every
+	// Profile on one-step sampling. The Recommended* values are what a network
+	// that enables the flow should start from, and what the chain itself falls
+	// back to for a task of a two-step Profile whose frozen parameters carry
+	// none (it never falls back to one-step sampling for such a task).
+	//
+	// RecommendedAnchorListWindowSeconds is the time a selected Worker has to
+	// record its commitment list: the same as the opening window. The position
+	// draw follows the list message, not the end of the window, so a long window
+	// costs a Worker that records its list nothing.
+	RecommendedAnchorListWindowSeconds = uint64(900)
+	RecommendedAnchorListWindowBlocks  = RecommendedAnchorListWindowSeconds * 1000 / AnchorWindowReferenceBlockMillis
+	// RecommendedAnchorPositionBeaconBlocks is the number of consecutive block
+	// beacons aggregated for the position draw. It is a starting value for a
+	// small validator set, not a derived bound: it must exceed the longest run of
+	// consecutive proposer slots a group below the fault threshold can hold.
+	RecommendedAnchorPositionBeaconBlocks = uint32(8)
+	// AnchorPositionBeaconBlocksMinimum and Maximum bound that number whenever
+	// two-step sampling is configured. Two is the least that makes the value
+	// unknown to the proposer of the block that includes the list.
+	AnchorPositionBeaconBlocksMinimum = uint32(2)
+	AnchorPositionBeaconBlocksMaximum = uint32(256)
+	// AnchorPositionDrawGraceBlocks is the slack the chain gives itself for the
+	// position draw of a two-step audit, on top of the list window and the
+	// beacon blocks. It is added to the verdict deadline fixed at selection, and
+	// the draw is allowed as long as the full opening, proof and verdict windows
+	// still end by that deadline. Without it a Worker that records its list in
+	// the last block of the list window gets a draw only if EndBlock visits the
+	// audit in exactly one block and every contributing beacon is good: one
+	// block of delay would end the audit NO_VERDICT. The grace belongs to the
+	// chain alone: it shortens no window of the Worker and does not depend on
+	// the height the Worker chose for its list. It is a constant of the
+	// protocol, not a governed parameter; it equals the largest beacon count, so
+	// that one full restarted beacon window always fits, whatever the count.
+	AnchorPositionDrawGraceBlocks = uint64(AnchorPositionBeaconBlocksMaximum)
 	// ADR-0040 v5: floor of the per-task audit probability (5%). The floor must
 	// be positive: with a floor of zero a task whose order is worth nothing to
 	// cheat on would never be audited.
@@ -378,7 +423,7 @@ func RepairAnchorParams(p TaskParamsV1) (TaskParamsV1, []string) {
 		notes = append(notes, fmt.Sprintf("verification.anchor_audit_min_rate_bps 0 is not a valid audit floor: raised to %d", DefaultAnchorAuditMinRateBPS))
 		p.Verification.AnchorAuditMinRateBps = DefaultAnchorAuditMinRateBPS
 	}
-	if total := p.Verification.AnchorTotalWindowBlocks(); total >= p.Cleanup.TaskTerminalSummaryRetentionBlocks {
+	if total := p.AnchorAuditLifeBlocks(); total >= p.Cleanup.TaskTerminalSummaryRetentionBlocks {
 		want := DefaultTaskTerminalSummaryRetentionBlocks
 		if want <= total {
 			want = total + 1
@@ -397,6 +442,14 @@ func (p TaskParamsV1) HasAnchorParams() bool {
 }
 
 func (p TaskParamsV1) Validate() error {
+	return p.validate(p.AnchorAuditLifeBlocks())
+}
+
+// validate checks the body; anchorLife is the audit life the task retention
+// must exceed: AnchorTotalWindowBlocks for a body that is to be put in force,
+// the bound as it was recorded for a body kept as history
+// (ValidateHistoricalTaskParams).
+func (p TaskParamsV1) validate(anchorLife uint64) error {
 	if p.SchemaVersion != TaskParamsSchemaVersion {
 		return fmt.Errorf("schema_version must be %d", TaskParamsSchemaVersion)
 	}
@@ -415,9 +468,9 @@ func (p TaskParamsV1) Validate() error {
 	if err := validateVerificationParams(p.Verification); err != nil {
 		return err
 	}
-	if p.Verification.AnchorTotalWindowBlocks() >= p.Cleanup.TaskTerminalSummaryRetentionBlocks {
-		return fmt.Errorf("verification anchor windows (%d blocks) must be shorter than cleanup.task_terminal_summary_retention_blocks",
-			p.Verification.AnchorTotalWindowBlocks())
+	if anchorLife >= p.Cleanup.TaskTerminalSummaryRetentionBlocks {
+		return fmt.Errorf("verification anchor windows (%d blocks, the longest life of an anchor audit) must be shorter than cleanup.task_terminal_summary_retention_blocks",
+			anchorLife)
 	}
 	if err := validateEvidenceParams(p.Evidence); err != nil {
 		return err
@@ -666,6 +719,9 @@ func validateVerificationParams(p VerificationParamsV1) error {
 			return fmt.Errorf("%s must be <= %d", item.name, BasisPointsMaximum)
 		}
 	}
+	if p.AnchorBrakeBaselinePeriods > MaxAnchorBrakeBaselinePeriods {
+		return fmt.Errorf("verification.anchor_brake_baseline_periods must be <= %d", MaxAnchorBrakeBaselinePeriods)
+	}
 	// A floor of zero would let the audit rate itself be zero (no margin, or an
 	// order worth nothing): such a task is never selected, so the floor would
 	// switch the audit off instead of bounding it from below.
@@ -687,7 +743,10 @@ func validateVerificationParams(p VerificationParamsV1) error {
 			return err
 		}
 	}
-	return p.validateAnchorPanel()
+	if err := p.validateAnchorPanel(); err != nil {
+		return err
+	}
+	return validateAnchorTwoStepParams(p)
 }
 
 const (
@@ -738,13 +797,147 @@ func (p VerificationParamsV1) validateAnchorPanel() error {
 	return nil
 }
 
+// validateAnchorTwoStepParams checks the two parameters of two-step anchor
+// sampling. They are set together or not at all: a list window without a
+// beacon count could not draw, and a beacon count without a window is a
+// configuration that does nothing.
+func validateAnchorTwoStepParams(p VerificationParamsV1) error {
+	if p.AnchorListWindowBlocks == 0 && p.AnchorPositionBeaconBlocks == 0 {
+		return nil
+	}
+	if p.AnchorListWindowBlocks == 0 {
+		return fmt.Errorf("verification.anchor_list_window_blocks must be set when verification.anchor_position_beacon_blocks is")
+	}
+	if p.AnchorListWindowBlocks > AnchorWindowBlocksMaximum {
+		return fmt.Errorf("verification.anchor_list_window_blocks must be <= %d", AnchorWindowBlocksMaximum)
+	}
+	if p.AnchorPositionBeaconBlocks < AnchorPositionBeaconBlocksMinimum || p.AnchorPositionBeaconBlocks > AnchorPositionBeaconBlocksMaximum {
+		return fmt.Errorf("verification.anchor_position_beacon_blocks must be in %d..%d when verification.anchor_list_window_blocks is set",
+			AnchorPositionBeaconBlocksMinimum, AnchorPositionBeaconBlocksMaximum)
+	}
+	return nil
+}
+
+// AnchorTwoStepConfigured reports whether the body carries the parameters of
+// two-step anchor sampling.
+func (v VerificationParamsV1) AnchorTwoStepConfigured() bool {
+	return v.AnchorListWindowBlocks != 0 && v.AnchorPositionBeaconBlocks >= AnchorPositionBeaconBlocksMinimum
+}
+
+// AnchorTwoStepWindows returns the list window and the beacon count a task of
+// a two-step Profile runs with: the frozen parameters when they are set, the
+// Recommended* values otherwise. The fallback exists so that such a task is
+// never sampled in one step.
+func (v VerificationParamsV1) AnchorTwoStepWindows() (listWindow uint64, beaconBlocks uint64) {
+	if v.AnchorTwoStepConfigured() {
+		return v.AnchorListWindowBlocks, uint64(v.AnchorPositionBeaconBlocks)
+	}
+	return RecommendedAnchorListWindowBlocks, uint64(RecommendedAnchorPositionBeaconBlocks)
+}
+
 // AnchorWindowBlocksMaximum caps each anchor window (ADR-0040 v6) so deadline
 // arithmetic cannot overflow and an audit cannot outlive task retention.
 const AnchorWindowBlocksMaximum = uint64(1_000_000)
 
-// AnchorTotalWindowBlocks is how long after sampling an audit may stay open.
+// AnchorTotalWindowBlocks is the longest an anchor audit of a task frozen on
+// this body may stay open, counted from the block that records its selection
+// to its verdict deadline:
+//
+//	list window + beacon blocks + AnchorPositionDrawGraceBlocks
+//	  + opening window + proof window + verdict window
+//
+// The list window and the beacon blocks are the ones a two-step audit really
+// runs with (AnchorTwoStepWindows): the configured values, or the Recommended*
+// fallback when the body carries none. The fallback is counted even though the
+// body does not enable two-step sampling, because a task of a two-step Profile
+// frozen on such a body is still audited in two steps, on the fallback
+// windows; leaving them out let a body validate with a task retention shorter
+// than the audit it has to outlive. A one-step audit is shorter than this.
+// Each term is at most AnchorWindowBlocksMaximum, so the sum cannot overflow.
 func (v VerificationParamsV1) AnchorTotalWindowBlocks() uint64 {
+	listWindow, beaconBlocks := v.AnchorTwoStepWindows()
+	return v.anchorOneStepWindowBlocks() + listWindow + beaconBlocks + AnchorPositionDrawGraceBlocks
+}
+
+// AnchorPanelRoundSpanBlocks is the longest one Verifier-panel round takes
+// from its opening to the block that closes it after its vote deadline: the
+// selection steps of a challenge round (candidate window delay, hand-raise
+// window, assignment delay, and one more assignment delay of waiting for the
+// draw beacon), the vote window and one block. It reports false when a
+// selection step is zero or the sum overflows.
+func (p TaskParamsV1) AnchorPanelRoundSpanBlocks() (uint64, bool) {
+	c := p.Challenge
+	if c.CandidateWindowDelayBlocks == 0 || c.HandraiseWindowBlocks == 0 || c.AssignmentDelayBlocks == 0 {
+		return 0, false
+	}
+	return sumUint64(c.CandidateWindowDelayBlocks, c.HandraiseWindowBlocks, c.AssignmentDelayBlocks, c.AssignmentDelayBlocks,
+		p.Verification.AnchorPanelVoteWindowBlocks, 1)
+}
+
+// AnchorEffectiveVerdictWindowBlocks is how long after the proof deadline the
+// audit of a task frozen on this body may take. With the validator vote it is
+// the verdict window. With a Verifier panel it also covers the first round,
+// its re-assignment, the publication window and a re-audit, and, with late
+// submission, the late window and the round a late submission opens. A body
+// whose panel schedule cannot be computed falls back to the verdict window.
+func (p TaskParamsV1) AnchorEffectiveVerdictWindowBlocks() uint64 {
+	v := p.Verification
+	if v.AnchorAuditMode != AnchorAuditModePanel {
+		return v.AnchorVerdictWindowBlocks
+	}
+	span, ok := p.AnchorPanelRoundSpanBlocks()
+	if !ok {
+		return v.AnchorVerdictWindowBlocks
+	}
+	parts := []uint64{v.AnchorVerdictWindowBlocks, span, span, span, v.AnchorPublicationWindowBlocks}
+	if v.AnchorLateWindowBlocks != 0 {
+		parts = append(parts, v.AnchorLateWindowBlocks, span)
+	}
+	total, ok := sumUint64(parts...)
+	if !ok {
+		return v.AnchorVerdictWindowBlocks
+	}
+	return total
+}
+
+// AnchorAuditLifeBlocks is AnchorTotalWindowBlocks with the verdict window an
+// audit of this body really has (AnchorEffectiveVerdictWindowBlocks): the
+// bound the task retention must exceed.
+func (p TaskParamsV1) AnchorAuditLifeBlocks() uint64 {
+	total, ok := sumUint64(p.Verification.AnchorTotalWindowBlocks()-p.Verification.AnchorVerdictWindowBlocks, p.AnchorEffectiveVerdictWindowBlocks())
+	if !ok {
+		return ^uint64(0)
+	}
+	return total
+}
+
+func sumUint64(values ...uint64) (uint64, bool) {
+	var total uint64
+	for _, value := range values {
+		next := total + value
+		if next < total {
+			return 0, false
+		}
+		total = next
+	}
+	return total, true
+}
+
+func (v VerificationParamsV1) anchorOneStepWindowBlocks() uint64 {
 	return v.AnchorOpenWindowBlocks + v.AnchorProofWindowBlocks + v.AnchorVerdictWindowBlocks
+}
+
+// anchorRecordedTotalWindowBlocks is the retention bound as it was enforced
+// before AnchorTotalWindowBlocks counted the whole life of a two-step audit.
+// Bodies recorded under it are history and stay valid as recorded
+// (ValidateHistoricalTaskParams); it is never applied to a body that is put in
+// force.
+func (v VerificationParamsV1) anchorRecordedTotalWindowBlocks() uint64 {
+	total := v.anchorOneStepWindowBlocks()
+	if v.AnchorTwoStepConfigured() {
+		total += v.AnchorListWindowBlocks + uint64(v.AnchorPositionBeaconBlocks)
+	}
+	return total
 }
 
 // AnchorAuditRiskMarginMaximum caps the risk margin k at 100x (ADR-0040 v5).
@@ -1157,7 +1350,10 @@ func ValidateHistoricalTaskParams(params TaskParamsV1) error {
 	if params.Verification.AnchorAuditMinRateBps == 0 {
 		params.Verification.AnchorAuditMinRateBps = DefaultAnchorAuditMinRateBPS
 	}
-	return params.Validate()
+	// The retention bound is the one the body was recorded under: the full
+	// life of a two-step audit (fallback windows, draw grace) was not counted
+	// then, and a recorded body is not made invalid afterwards.
+	return params.validate(params.Verification.anchorRecordedTotalWindowBlocks())
 }
 
 // verificationParamsCanonicalFields frames VerificationParamsV1 for the params
@@ -1199,5 +1395,8 @@ func verificationParamsCanonicalFields(v VerificationParamsV1) []shared.Canonica
 		shared.Uint32BE(v.LogprobRejectSlashBps),
 		shared.Uint32BE(v.LogprobVerifierWrongVoteSlashBps),
 		shared.Uint64BE(v.InputTokenTolerance),
+		// 42..43: two-step anchor sampling.
+		shared.Uint64BE(v.AnchorListWindowBlocks),
+		shared.Uint32BE(v.AnchorPositionBeaconBlocks),
 	)
 }

@@ -219,7 +219,7 @@ func (f *batchFixture) addMember(t *testing.T, tag byte, net uint64) types.TaskK
 	t.Helper()
 	taskKey := types.NewTaskKey(bytes.Repeat([]byte{tag}, types.Hash32Len))
 	require.NoError(t, f.keeper.joinWorkerBatch(f.ctx, taskKey, f.worker, f.receiptAt, f.params))
-	require.NoError(t, f.keeper.closeWorkerBatchTask(f.ctx, taskKey, net, false, types.WorkerBatchStatusV1_WORKER_BATCH_STATUS_V1_UNSPECIFIED, f.receiptAt))
+	require.NoError(t, f.keeper.closeWorkerBatchTask(f.ctx, taskKey, net, false, types.WorkerBatchStatusV1_WORKER_BATCH_STATUS_V1_UNSPECIFIED, false, f.receiptAt))
 	return taskKey
 }
 
@@ -303,7 +303,7 @@ func TestPaidBatchIsNotTakenBack(t *testing.T) {
 	require.Equal(t, batchSettled, f.batch(t, 0).Status)
 	late := types.NewTaskKey(bytes.Repeat([]byte{0xb3}, types.Hash32Len))
 	require.NoError(t, f.keeper.joinWorkerBatch(f.ctx, late, f.worker, f.receiptAt, f.params))
-	require.NoError(t, f.keeper.closeWorkerBatchTask(f.ctx, late, 0, true, batchForfeitedCheat, latePeriod+1))
+	require.NoError(t, f.keeper.closeWorkerBatchTask(f.ctx, late, 0, true, batchForfeitedCheat, false, latePeriod+1))
 	batch := f.batch(t, 0)
 	require.Equal(t, batchSettled, batch.Status)
 	require.Empty(t, batch.ForfeitingTaskId)
@@ -471,6 +471,10 @@ func TestRecordedDispatchJoinsTheWorkerBatch(t *testing.T) {
 		require.NoError(t, err)
 		params.Verification.BatchSettlementPeriodBlocks = period
 		require.NoError(t, f.keeper.Params.Set(f.ctx, params))
+		if period != 0 {
+			// With a settlement period the record also reserves the Worker's quota.
+			f.hub.quota = &quotaLedgerStub{limit: ^uint64(0) >> 1, reserved: map[uint64]uint64{}}
+		}
 		entry := f.entry(t, f.signedOrder(t, 0, f.delegateKey), f.hub.builders[0])
 		_, err = NewMsgServerImpl(f.keeper).RecordDispatch(f.ctx, &types.MsgRecordDispatch{
 			SubmitterAddress: f.hub.builders[0], Entries: []*types.DispatchRecordEntryV1{dispatchEntryItem(entry)},

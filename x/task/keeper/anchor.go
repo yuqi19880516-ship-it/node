@@ -181,17 +181,16 @@ func (k Keeper) sampleAnchorAudit(ctx context.Context, assignment types.Verifier
 		return nil
 	}
 	v := params.Verification
+	height, err := currentBlockHeight(ctx)
+	if err != nil {
+		return err
+	}
 	openDeadline, o1 := checkedHeightAdd(assignment.SelectionRandomnessHeight, v.AnchorOpenWindowBlocks)
 	proofDeadline, o2 := checkedHeightAdd(openDeadline, v.AnchorProofWindowBlocks)
 	// The audit mode is frozen with the task's parameters. A panel audit runs
 	// longer than a validator vote: up to two rounds, the publication window
 	// and a re-audit.
-	verdictWindow := v.AnchorVerdictWindowBlocks
-	if v.AnchorAuditMode == anchorAuditModePanel {
-		if window, ok := anchorPanelVerdictWindowBlocks(params); ok {
-			verdictWindow = window
-		}
-	}
+	verdictWindow := params.AnchorEffectiveVerdictWindowBlocks()
 	verdictDeadline, o3 := checkedHeightAdd(proofDeadline, verdictWindow)
 	if o1 || o2 || o3 {
 		sdk.UnwrapSDKContext(ctx).Logger().Error("anchor audit skipped: deadline overflows", "task", fmt.Sprintf("%x", assignment.TaskId))
@@ -230,10 +229,6 @@ func (k Keeper) sampleAnchorAudit(ctx context.Context, assignment types.Verifier
 		// The receipt is admitted with a checked token commitment (ADR-0040 v6);
 		// any older or otherwise unsampleable receipt is the Worker's own signed
 		// fault: audit it, final REJECT, settled and slashed like a rejected proof.
-		height, err := currentBlockHeight(ctx)
-		if err != nil {
-			return err
-		}
 		state.Selected = true
 		state.ResultHeight = height
 		state.TaskVerdict = types.AnchorVerdictV1_ANCHOR_VERDICT_V1_REJECT
@@ -244,7 +239,27 @@ func (k Keeper) sampleAnchorAudit(ctx context.Context, assignment types.Verifier
 		}
 		return emitAnchorVerdictEvent(ctx, state)
 	}
-	if state.Selected {
+	// The sampling mode comes from the locked Profile: one step for anchor
+	// commitment schema version 1, two steps for version 2.
+	mode, modeKnown := k.anchorSamplingModeOf(ctx, taskKey)
+	if !state.Selected {
+		// An unselected task never enters either flow; its row is the same in
+		// both modes apart from the recorded mode.
+		if modeKnown {
+			state.SamplingMode = mode
+		}
+		return k.AnchorAudit.Set(ctx, taskKey, state)
+	}
+	if !modeKnown {
+		// Without the Profile the chain cannot tell which flow the Worker and the
+		// validators are running. Guessing either way could cost an honest Worker
+		// (a two-step audit with no list is a timeout fault) or void the audit, so
+		// no row is written: the Verifier path goes on unaudited, the anchor-only
+		// path fails and refunds the task without a fault.
+		sdk.UnwrapSDKContext(ctx).Logger().Error("anchor audit skipped: the task's locked Profile is unavailable at sampling", "task", fmt.Sprintf("%x", assignment.TaskId))
+		return nil
+	}
+	if mode != anchorSamplingModeTwoStep {
 		state.Positions = anchorSamplePositions(assignment.TaskId, assignment.SelectionRandomnessBeacon, rows, anchorSamplePositionsV0)
 		if isAnchorPanelAudit(state) && v.AnchorLateWindowBlocks != 0 {
 			// With late submission the sweep watches the Worker's deadlines.
@@ -252,8 +267,26 @@ func (k Keeper) sampleAnchorAudit(ctx context.Context, assignment types.Verifier
 				return err
 			}
 		}
+		return k.AnchorAudit.Set(ctx, taskKey, state)
 	}
-	return k.AnchorAudit.Set(ctx, taskKey, state)
+	// Two-step sampling: the first beacon selected the task and decides nothing
+	// else. No position exists until the Worker's list is recorded and the
+	// beacons after it are aggregated (anchor_two_step.go).
+	state.SamplingMode = anchorSamplingModeTwoStep
+	if !anchorTwoStepSelection(&state, params, height) {
+		sdk.UnwrapSDKContext(ctx).Logger().Error("anchor audit skipped: two-step deadline overflows", "task", fmt.Sprintf("%x", assignment.TaskId))
+		return nil
+	}
+	if err := k.AnchorAudit.Set(ctx, taskKey, state); err != nil {
+		return err
+	}
+	if err := k.setAnchorSamplingDue(ctx, taskKey, anchorSamplingDueHeightOf(state)); err != nil {
+		return err
+	}
+	return emitTypedEvent(ctx, &types.EventAnchorAuditSelected{
+		TaskId: append([]byte(nil), state.TaskId...), WorkerOperatorAddress: state.WinnerWorker,
+		SamplingMode: state.SamplingMode, ListDeadlineHeight: state.ListDeadlineHeight,
+	})
 }
 
 func truncateAnchorReason(reason string) string {
@@ -354,6 +387,11 @@ func (m msgServer) SubmitAnchorOpening(ctx context.Context, req *types.MsgSubmit
 	}
 	if state.ResultHeight != 0 {
 		return nil, errorsmod.Wrap(types.ErrInvalidAssignment, "anchor audit verdict is already final")
+	}
+	if isAnchorTwoStep(state) && len(state.Positions) == 0 {
+		// Two-step sampling: nothing can be opened before the draw, and the draw
+		// follows the Worker's recorded commitment list.
+		return nil, errorsmod.Wrap(types.ErrInvalidAssignment, "anchor positions have not been drawn yet")
 	}
 	late := anchorLateSubmissionOpen(state, height)
 	if state.OpeningDeadlineHeight != 0 && height > state.OpeningDeadlineHeight && !late {

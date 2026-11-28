@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Verifier-panel audit of two-step tasks; one upgrade for the series.**
+  - A task of a two-step Profile (anchor commitment schema version 2) may be
+    audited by a Verifier panel. The verdict deadline written at selection
+    covers the list window, the beacon heights, the draw grace, the Worker's
+    windows and the panel schedule (rounds, publication, late window). With
+    late submission the Worker's opening and proof deadlines are watched from
+    the position draw.
+  - A missing commitment list has no late form: one block after the list
+    deadline the audit ends as the existing timeout (the task fails, the
+    `anchor_timeout` fault, no pause, no late window, no batch forfeiture).
+  - The task retention bound (`cleanup.task_terminal_summary_retention_blocks`
+    above the life of an audit) counts the panel schedule when
+    `anchor_audit_mode = 2`; under the validator vote it is unchanged.
+  - Panel assignments carry the Profile's registration hash. A dispatch
+    record that names a Worker paused for a late submission is refused like
+    any paused Worker. While the per-model brake withholds a rejection's
+    slash, the forfeiture of the Worker's batch waits with it: the batch is
+    marked and not paid; a release that applies forfeits it, a release that
+    discards lets it be paid. A Worker's open obligations include an audit
+    waiting for a late submission and a batch that is not paid or forfeited.
+  - One upgrade plan, `v0.6.4-two-step-sampling`, carries the whole series:
+    task 4 -> 5 and hub 3 -> 4, both committing the parameter bodies again.
+    The separate plan name `v0.6.3-verifier-panel` is gone.
 - **Upgrade `v0.6.3-verifier-panel`.** The governance plan of this name
   activates the binary that carries the Verifier-panel audit. The task module
   goes to consensus version 5 and the hub module to 4. The task and service
@@ -170,6 +193,104 @@
     still choosing its members ends without a conclusion at the first block.
   - Parameter validation: with `anchor_audit_mode = 2`, `anchor_panel_size`
     must be 1..15 and `anchor_panel_threshold` a strict majority of it.
+- **Consensus-breaking: registration hash in the Profile, input-token rule,
+  per-model brake.** Three rules of the Verifier-panel contract. Each is off
+  unless a Profile or a parameter turns it on.
+  - **Registration hash.** The Worker anchor entry of a Profile's
+    `required_infer_evidence` may carry `registration_hash`: the sha256 of the
+    canonical `registration.json` its anchor audit is verified against. It is
+    accepted only on that entry, as a non-zero 32-byte value, in
+    `register-model-profile` JSON (`"registration_hash": "0x…"`) as well. An
+    entry that sets it is framed with it as a fourth field, so the Profile's
+    `evidence_schema_hash`, execution snapshot hash and registration body
+    commit to it; an entry without it is framed and hashed exactly as before.
+    `Query/Profile` returns it inside the evidence schema, and the Task keeper
+    exposes `AnchorRegistrationHash(model_id, profile_version)`.
+  - **Input-token rule** (`input_token_tolerance`, default 0 = off).
+    `MsgRecordDispatch.input_tokens_attestations` may carry the user's signed
+    statement of an order's input token count. With a non-zero tolerance in
+    the parameters the task is recorded under, a statement that names the
+    order, uses the order's signature scheme and signature chain id, and
+    verifies as EIP-712 typed data (domain `TrueOpen Order Input Tokens`
+    version `1`, type `OrderInputTokens(string chainId,bytes32 orderDigest,uint64 inputTokenCount,bytes32 attestationDigest)`)
+    under the key that signed the order is kept with the task. A record
+    without a statement, with two statements for one order, or with one that
+    does not verify is accepted unchanged and the rule does not apply to that
+    task; no dispatch record is refused and nobody is faulted for it. A
+    takeover entry never carries one.
+    A receipt of a task with a statement is refused when the prompt token
+    count read from its Worker token commitment (`(size - 8) / 4 - generated`)
+    is below `statement - tolerance`: `MsgSubmitInferReceipt` answers with
+    status `REJECTED` and accepts nothing. The Worker may send another receipt
+    before the inference deadline. If the deadline passes after such a
+    refusal, the task ends as a refunded failure without the inference-timeout
+    fault. New store prefixes `task_input_token_statement` and
+    `task_input_token_refusal`; neither is part of the exported genesis.
+  - **Per-model brake** (`anchor_brake_min_cases`, default 0 = off; needs
+    `batch_settlement_period_blocks`). Per model and settlement period the
+    chain counts the selected anchor audits settled (`audited`) and those that
+    ended in a REJECT of the Worker's proof (`cases`; a missed deadline or
+    unavailable material is an audit, not a case). The period trips when
+    `cases >= anchor_brake_min_cases` and its rate is at least
+    `anchor_brake_multiple_x1000 / 1000` times the mean rate of the preceding
+    `anchor_brake_baseline_periods` periods that had audits and did not trip
+    (the case count alone when there is none). From the tripping case on, the
+    Worker slash of such a REJECT is withheld; the task still fails and the
+    user is still refunded. `MsgReleaseAnchorBrake`, signed by the module
+    authority, applies or discards the withheld slashes (at most 256 per
+    message; repeat to continue). Later REJECT slashes of that period follow
+    the release. `Query/AnchorBrake` returns the row (`period = 0` is the
+    current period). Events `EventAnchorBrakeTripped` and
+    `EventAnchorBrakeReleased`. Rows are exported in `anchor_brakes`; the
+    withheld slashes are not part of the exported genesis.
+    `anchor_brake_baseline_periods` is bounded at 64. Suggested values are
+    published as `RecommendedAnchorBrakeMinCases` (3),
+    `RecommendedAnchorBrakeMultipleX1000` (3000) and
+    `RecommendedAnchorBrakeBaselinePeriods` (7).
+- **Consensus-breaking: Worker bond floor, order quota and unbonding
+  conditions.** Four Hub service parameters that were carried but not read are
+  now applied. Each is off at its zero default, and a chain that sets none of
+  them stores and answers exactly what it did before.
+  - `worker_bond_floor_by_tier`: a dispatch record whose winner has an
+    effective bond below the floor of the Profile's resource tier is refused.
+    Tiers are listed once, in increasing order, within 1 to 5, with a non-zero
+    amount.
+  - `worker_quota_period_value_bps_of_bond` together with the Task parameter
+    `batch_settlement_period_blocks`: the order value a Worker has reserved and
+    settled in one settlement period may not exceed
+    `effective_bond * bps / 10000`. The period of a task is
+    `record_height / batch_settlement_period_blocks` under the task's own
+    frozen parameters. A dispatch record reserves the task's order value; the
+    record that does not fit is refused. At finality the reservation is
+    replaced by the order value of the tokens the settlement billed (zero for
+    a task that fails before verification). The coefficient is bounded at
+    100000. Without a settlement period there is no quota.
+  - A dispatch record is also refused while the winner's bond has
+    `dispatch_paused` set.
+  - These three refusals reject the new record with `WINNER_NOT_ELIGIBLE` and
+    do nothing else: no ineligibility receipt, no fault, no change to any task
+    already recorded. The existing ineligibility outcomes (tombstoned, fully
+    unbonding, bond below the Profile minimum, liability not covered) are
+    evaluated first and are unchanged.
+  - `stop_dispatch_on_unbond_request`: a service unbonding request sets the
+    pause reason `UNBONDING` (bit 2) on the bond; it is cleared when the
+    operator's pending unbonding total returns to zero.
+  - `unbond_requires_no_open_tasks`: a matured unbonding is not withdrawn
+    while the operator is the Worker of a task that is not final.
+  - `hub.v1.Query/WorkerQuota` answers the period (0 in the request is the
+    current one), the quota at the current effective bond, the reserved and
+    settled value, what is left, and `enforced` (true when both the
+    coefficient and a settlement period are set).
+  - Quota rows are exported and imported in Hub genesis field `worker_quotas`
+    and deleted once they hold no reservation and lie 16 periods behind the
+    operator's newest record. New store prefix `worker_quota`.
+  - Suggested values are published as `RecommendedWorkerQuotaPeriodValueBpsOfBond`
+    (1428), `RecommendedWorkerBondFloorRevenuePeriods` (7) and
+    `RecommendedServiceUnbondingPeriodBlocks` (1209600). No default changed.
+  - A task's terminal transition (settlement, or failure before verification)
+    now reads the task's frozen parameters to find its settlement period. On a
+    chain without a settlement period this is the only difference: one more
+    read in those transactions, no state change.
 - **Consensus-breaking: audit capability for Verifier panels.** A Cortex
   operator may declare `audit_capability` for a model in
   `MsgDeclareModelSupport`, alone or together with inference or verification
@@ -200,6 +321,94 @@
     exported genesis: after an export and import a capability declared in the
     export epoch is usable at once instead of one epoch later.
   - Declarations without audit capability behave exactly as before.
+- **Two-step sampling of the anchor audit (off by default).** A Profile
+  version whose anchor evidence requirement carries
+  `commitment_schema_version = 2` is audited in two steps: the first beacon
+  only selects the task; the selected Worker records the hash of its per-row
+  commitment list with `MsgSubmitAnchorCommitmentList`; the positions are then
+  drawn in EndBlock from the aggregated proposer-VRF beacons of the
+  `anchor_position_beacon_blocks` heights after the block that included the
+  list. Opening and proof deadlines count from the draw.
+  - The first accepted list is final: the same hash and size again is a NOOP,
+    any other content is refused for the rest of the audit, and the message is
+    refused after `list_deadline_height`.
+  - No list by the deadline ends the audit REJECT with source `TIMEOUT`, settled
+    as the existing timeout fault (the fault of a missing opening: the smaller
+    slash, no jail, Task not paid). Everything the chain owes the audit can only
+    delay it or end it NO_VERDICT: a contributing beacon that is missing or is
+    not a proposer-VRF value restarts the window with fresh heights, and a draw
+    that could no longer leave the full opening, proof and verdict windows is
+    not made.
+  - New parameters `verification.anchor_list_window_blocks` and
+    `verification.anchor_position_beacon_blocks`, both zero by default
+    (recommended 1,800 and 8). No `Default*` value changes. Registering a
+    version-2 Profile is refused unless both are set and
+    `beacon.vrf_required_from_height` is set and reached.
+  - Profiles of schema version 1, unselected tasks and audits in flight are
+    unchanged: a one-step audit row is byte for byte the previous one. The Task
+    parameter commitment changes because it frames every field. Two new store
+    prefixes inside the Task store (the sampling queue); no store key change.
+- **Two-step sampling: fixes after the release-candidate audit.**
+  - The chain gives its own position draw a grace of 256 blocks
+    (`AnchorPositionDrawGraceBlocks`, a protocol constant). The verdict deadline
+    written at selection is now `list deadline + beacon blocks + 256 + opening +
+    proof + verdict windows`, and the draw is made as long as the three full
+    windows still end by it. A list recorded in the last block of the list
+    window no longer ends NO_VERDICT after one block of EndBlock delay or one
+    restarted beacon window. No window of the Worker is shortened; the list
+    deadline is unchanged; audits selected before the change keep the deadline
+    they carry.
+  - Parameter validation now compares the task retention
+    (`cleanup.task_terminal_summary_retention_blocks`) with the real longest
+    life of an audit: list window + beacon blocks + 256 + opening + proof +
+    verdict windows, where the list window and beacon blocks are the configured
+    ones or, when the body carries none, the recommended 1,800 + 8 that a task
+    of a two-step Profile then runs on. Before, the fallback windows were not
+    counted. A body recorded under the earlier rule stays valid as history and
+    keeps its commitment; a parameter update or a genesis whose retention is
+    not above the new bound is refused.
+  - `MsgSubmitAnchorCommitmentList` with the recorded hash and size and
+    another `list_uri` now corrects the recorded location (status APPLIED,
+    `EventAnchorCommitmentListRecorded` emitted again with unchanged fields)
+    while the audit has no final verdict: before and after the draw and after
+    the list deadline. The new location must lie under the frozen
+    `da_uri_prefix`. It changes nothing but `commitment_list_uri`. The hash and
+    the size stay final: any other content is refused as before. With the
+    recorded location, or after the verdict is final, the message is a NOOP.
+    Before, a wrong first location could never be corrected.
+  - A missing commitment list on a round that did not pass is applied at the
+    same moment as a missing opening: only by a settlement at or after the
+    verdict deadline. Before, it took the timeout fault from the block after
+    the list deadline, where the one-step counterpart imposes nothing. The
+    audit row still records REJECT / TIMEOUT one block after the list deadline,
+    and a PASS round is decided by it from that block as before.
+  - A chain that stops requiring the VRF beacon after a two-step Profile was
+    registered can make no position draw. Such an audit now ends at its first
+    draw visit as NO_VERDICT (source `TIMEOUT`) with a reason of its own that
+    names `beacon.vrf_required_from_height`, instead of restarting windows
+    until none fits: the Worker is paid, nothing is slashed. A draw whose
+    beacons are verified proposer-VRF values is made as before.
+    `MsgUpdateHubParams` now refuses to set `beacon.vrf_required_from_height`
+    to zero, or above the current height once it has been reached, while a
+    Profile version that is not delisted uses two-step sampling.
+  - `docs/runbooks/anchor_two_step_sampling.md`: the heights of one audit, the
+    longest audit life a Worker's retention must cover, the list message rules,
+    the upgrade, and the stated residual of the position beacon (the last
+    contributing proposers can re-roll the draw by withholding a block, and the
+    Worker chooses which proposers those are) with guidance for
+    `anchor_position_beacon_blocks`. The protocol is not changed for it.
+  - **Upgrade plan `v0.6.4-two-step-sampling`; Task module consensus version
+    4 -> 5.** The Task parameter commitment frames every field, so the fields
+    added since the anchor audit release (18..43) change the hash of an
+    unchanged body: after an in-place upgrade the stored commitment no longer
+    matched, the parameter invariant failed and genesis export was refused until
+    the next governance update. The 4 -> 5 migration writes the live body as a
+    new params version with its commitment and archives the replaced version
+    unchanged (rows bound to it keep reading it). A task retention that is not
+    above the new bound is raised by the migration, with a logged note to
+    confirm by governance. A chain whose commitment already matches is left
+    alone. A genesis exported by the previous binary still carries the old
+    commitment and is not accepted as it is by a cold start of this binary.
 - **Consensus-breaking: anchor audit, material the Worker does not keep
   retrievable.** A validator that cannot obtain the opening, proof or manifest
   a Worker recorded may vote `UNAVAILABLE`.

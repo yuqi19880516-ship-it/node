@@ -155,6 +155,23 @@ func (m msgServer) SubmitInferReceipt(ctx context.Context, req *types.MsgSubmitI
 	}); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	// Input-token rule: a receipt that states fewer prompt tokens than the user
+	// attested, beyond the tolerance, is refused. The refusal is recorded so
+	// that the inference deadline that follows is not counted as a timeout of
+	// the Worker.
+	violated, err := m.k.inputTokenRuleViolated(ctx, taskKey, params, receipt)
+	if err != nil {
+		return nil, err
+	}
+	if violated {
+		if err := m.k.TaskInputTokenRefusal.Set(ctx, taskKey); err != nil {
+			return nil, err
+		}
+		return &types.MsgSubmitInferReceiptResponse{
+			TaskId: receipt.TaskId, InferReceiptHash: signingDigest[:],
+			Status: shared.MutationStatusV1_MUTATION_STATUS_V1_REJECTED,
+		}, nil
+	}
 	hubParams := m.k.hubKeeper.GetHubParams(sdkCtx)
 	clock, err := freezeVerifierWindowClock(height, verifierWindowClockParams{
 		DeltaWBlocks:                hubParams.DeltaWBlocks,
@@ -403,7 +420,7 @@ func validateLockedProfileEvidenceCommitments(
 			requirement.EvidenceKind != shared.EvidenceKind_EVIDENCE_KIND_WORKER_VALUE_OPENING) ||
 			index == 1 && (requirement.CommitmentSchemaVersion != shared.WorkerTokenCommitmentSchemaVersionV1 ||
 				requirement.EvidenceKind != shared.EvidenceKind_EVIDENCE_KIND_WORKER_TOKEN_OPENING) ||
-			index == 2 && (requirement.CommitmentSchemaVersion != shared.WorkerAnchorCommitmentSchemaVersionV1 ||
+			index == 2 && (!shared.IsWorkerAnchorCommitmentSchemaVersion(requirement.CommitmentSchemaVersion) ||
 				requirement.EvidenceKind != shared.EvidenceKind_EVIDENCE_KIND_WORKER_ANCHOR_OPENING) {
 			return fmt.Errorf("required_evidence_commitments[%d] uses an unsupported commitment schema", index)
 		}

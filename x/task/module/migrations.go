@@ -36,10 +36,12 @@ func migrations(k keeper.Keeper) map[uint64]module.MigrationHandler {
 		// the anchor parameters are written as a new params version (default
 		// shares, recommended windows).
 		3: func(ctx sdk.Context) error { return k.InitializeAnchorParams(ctx) },
-		// 4 -> 5 (Verifier-panel audit): new store prefixes need no rewrite.
-		// The parameter commitment frames the new fields, so the unchanged
-		// body is committed again as a new params version.
-		4: func(ctx sdk.Context) error { return k.RecommitParams(ctx) },
+		// 4 -> 5 (Verifier-panel audit and two-step anchor sampling): the
+		// params commitment frames the new fields of both, so the stored one
+		// no longer matches its body. The body is written as a new params
+		// version with its commitment; a retention shorter than the full life
+		// of a two-step audit is repaired. New store prefixes need no rewrite.
+		4: func(ctx sdk.Context) error { return k.RecommitTaskParams(ctx) },
 	}
 }
 

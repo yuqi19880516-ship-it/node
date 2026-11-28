@@ -44,6 +44,8 @@ type HubParamsSnapshot struct {
 	BusinessDenom                         string
 	// MinValidatorSeparation keeps block-producer identities off Verifier panels.
 	MinValidatorSeparation bool
+	// WorkerQuota carries the Worker bond rules a dispatch record applies.
+	WorkerQuota WorkerQuotaTerms
 }
 
 type EndBlockBudgetSnapshot struct {
@@ -111,6 +113,9 @@ type ServiceBondSnapshot struct {
 	BondVersion           uint64
 	EffectiveEpoch        uint64
 	PendingUnbonding      uint64
+	// DispatchPaused mirrors the bond: a paused Worker takes no new order.
+	DispatchPaused bool
+	PauseReasons   uint32
 }
 
 type CurrentServiceKeySnapshot struct {
@@ -288,6 +293,8 @@ type HubKeeper interface {
 	ApplyWorkerObjectiveEvidence(ctx context.Context, fact shared.WorkerObjectiveEvidenceFactV1) (RoleFaultState, error)
 	ApplyRoundEconomicEffect(ctx context.Context, req RoundEconomicEffectApplyRequest) (RoundEconomicEffectApplyReceipt, error)
 	ReleaseTaskLiabilities(ctx context.Context, sessionID, taskID string, height uint64) error
+	ReserveWorkerQuota(ctx context.Context, operatorAddress string, period, value, height uint64) error
+	SettleWorkerQuota(ctx context.Context, operatorAddress string, period, reserved, actual, height uint64) error
 	DeleteOneRoundSlashSummary(ctx context.Context, taskID, roundID []byte) (bool, error)
 	HasTaskRoleFaults(ctx context.Context, taskID []byte) (bool, error)
 	DeleteOneClosedTaskLiability(ctx context.Context, taskID string) (bool, error)
