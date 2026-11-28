@@ -538,3 +538,34 @@ func TestAuditSampledWithoutALateWindowIsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	f.requireWorkerFaulted(t, settlement, hubtypes.FaultTypeAnchorTimeout, f.params.Verification.AnchorTimeoutSlashBps, bond)
 }
+
+// A beacon that never arrives for the round a late submission opened is not
+// the Worker's loss: the round ends without a conclusion, the audit without a
+// verdict, and the Worker is paid. The same holds when the working row of
+// that round is lost.
+func TestMissingBeaconOrLostRowInALateRoundPaysTheWorker(t *testing.T) {
+	for _, lostRow := range []bool{false, true} {
+		f := newAnchorLateFixture(t, 4_000, 6)
+		recorded := f.timeOutTheProof(t)
+		_, err := f.proveAt(recorded+1, "p")
+		require.NoError(t, err)
+		window := f.selection(t).Window
+		if lostRow {
+			require.NoError(t, f.keeper.AnchorPanelSelection.Remove(f.ctx, f.taskKey))
+			require.Equal(t, uint64(1), f.sweep(t, window.WindowRandomnessHeight))
+		} else {
+			f.hubState.noBeacon[int64(window.WindowRandomnessHeight)] = true
+			f.sweep(t, window.WindowRandomnessHeight)
+			f.sweep(t, window.AssignmentDeadlineHeight)
+		}
+		audit := f.reload(t)
+		require.Equal(t, noVerdict, audit.TaskVerdict)
+		require.Equal(t, sourcePanel, audit.ResultSource)
+		require.NotZero(t, audit.ResultHeight)
+		require.False(t, f.workerPaused())
+		settlement, err := f.settleNow(t, audit.ResultHeight+1)
+		require.NoError(t, err)
+		f.requirePaidInFull(t, settlement)
+		require.Empty(t, *f.faults)
+	}
+}
