@@ -190,12 +190,7 @@ func (k Keeper) sampleAnchorAudit(ctx context.Context, assignment types.Verifier
 	// The audit mode is frozen with the task's parameters. A panel audit runs
 	// longer than a validator vote: up to two rounds, the publication window
 	// and a re-audit.
-	verdictWindow := v.AnchorVerdictWindowBlocks
-	if v.AnchorAuditMode == anchorAuditModePanel {
-		if window, ok := anchorPanelVerdictWindowBlocks(params); ok {
-			verdictWindow = window
-		}
-	}
+	verdictWindow := params.AnchorEffectiveVerdictWindowBlocks()
 	verdictDeadline, o3 := checkedHeightAdd(proofDeadline, verdictWindow)
 	if o1 || o2 || o3 {
 		sdk.UnwrapSDKContext(ctx).Logger().Error("anchor audit skipped: deadline overflows", "task", fmt.Sprintf("%x", assignment.TaskId))
@@ -278,7 +273,7 @@ func (k Keeper) sampleAnchorAudit(ctx context.Context, assignment types.Verifier
 	// else. No position exists until the Worker's list is recorded and the
 	// beacons after it are aggregated (anchor_two_step.go).
 	state.SamplingMode = anchorSamplingModeTwoStep
-	if !anchorTwoStepSelection(&state, v, height) {
+	if !anchorTwoStepSelection(&state, params, height) {
 		sdk.UnwrapSDKContext(ctx).Logger().Error("anchor audit skipped: two-step deadline overflows", "task", fmt.Sprintf("%x", assignment.TaskId))
 		return nil
 	}

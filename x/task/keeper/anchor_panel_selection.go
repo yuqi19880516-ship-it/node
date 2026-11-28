@@ -357,22 +357,6 @@ func freezeAnchorPanelSelectionClock(openHeight uint64, params types.ChallengePa
 	}, nil
 }
 
-// anchorPanelSelectionSpanBlocks is the longest a panel round takes from its
-// opening to its vote deadline under the frozen parameters.
-func anchorPanelSelectionSpanBlocks(params types.TaskParamsV1) (uint64, bool) {
-	clock, err := freezeAnchorPanelSelectionClock(0, params.Challenge)
-	if err != nil {
-		return 0, false
-	}
-	span, overflow := checkedHeightAdd(clock.AssignmentDeadlineHeight, params.Verification.AnchorPanelVoteWindowBlocks)
-	if overflow {
-		return 0, false
-	}
-	// One block for the sweep that closes the round after its vote deadline.
-	span, overflow = checkedHeightAdd(span, 1)
-	return span, !overflow
-}
-
 // freezeAnchorPanelSelection builds the working row of a new panel round at
 // height: the operators eligible now, less the task's Worker and the members
 // of earlier panel rounds, frozen into a candidate window. It reports false,

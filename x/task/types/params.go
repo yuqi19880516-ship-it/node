@@ -423,7 +423,7 @@ func RepairAnchorParams(p TaskParamsV1) (TaskParamsV1, []string) {
 		notes = append(notes, fmt.Sprintf("verification.anchor_audit_min_rate_bps 0 is not a valid audit floor: raised to %d", DefaultAnchorAuditMinRateBPS))
 		p.Verification.AnchorAuditMinRateBps = DefaultAnchorAuditMinRateBPS
 	}
-	if total := p.Verification.AnchorTotalWindowBlocks(); total >= p.Cleanup.TaskTerminalSummaryRetentionBlocks {
+	if total := p.AnchorAuditLifeBlocks(); total >= p.Cleanup.TaskTerminalSummaryRetentionBlocks {
 		want := DefaultTaskTerminalSummaryRetentionBlocks
 		if want <= total {
 			want = total + 1
@@ -442,7 +442,7 @@ func (p TaskParamsV1) HasAnchorParams() bool {
 }
 
 func (p TaskParamsV1) Validate() error {
-	return p.validate(p.Verification.AnchorTotalWindowBlocks())
+	return p.validate(p.AnchorAuditLifeBlocks())
 }
 
 // validate checks the body; anchorLife is the audit life the task retention
@@ -857,6 +857,70 @@ const AnchorWindowBlocksMaximum = uint64(1_000_000)
 func (v VerificationParamsV1) AnchorTotalWindowBlocks() uint64 {
 	listWindow, beaconBlocks := v.AnchorTwoStepWindows()
 	return v.anchorOneStepWindowBlocks() + listWindow + beaconBlocks + AnchorPositionDrawGraceBlocks
+}
+
+// AnchorPanelRoundSpanBlocks is the longest one Verifier-panel round takes
+// from its opening to the block that closes it after its vote deadline: the
+// selection steps of a challenge round (candidate window delay, hand-raise
+// window, assignment delay, and one more assignment delay of waiting for the
+// draw beacon), the vote window and one block. It reports false when a
+// selection step is zero or the sum overflows.
+func (p TaskParamsV1) AnchorPanelRoundSpanBlocks() (uint64, bool) {
+	c := p.Challenge
+	if c.CandidateWindowDelayBlocks == 0 || c.HandraiseWindowBlocks == 0 || c.AssignmentDelayBlocks == 0 {
+		return 0, false
+	}
+	return sumUint64(c.CandidateWindowDelayBlocks, c.HandraiseWindowBlocks, c.AssignmentDelayBlocks, c.AssignmentDelayBlocks,
+		p.Verification.AnchorPanelVoteWindowBlocks, 1)
+}
+
+// AnchorEffectiveVerdictWindowBlocks is how long after the proof deadline the
+// audit of a task frozen on this body may take. With the validator vote it is
+// the verdict window. With a Verifier panel it also covers the first round,
+// its re-assignment, the publication window and a re-audit, and, with late
+// submission, the late window and the round a late submission opens. A body
+// whose panel schedule cannot be computed falls back to the verdict window.
+func (p TaskParamsV1) AnchorEffectiveVerdictWindowBlocks() uint64 {
+	v := p.Verification
+	if v.AnchorAuditMode != AnchorAuditModePanel {
+		return v.AnchorVerdictWindowBlocks
+	}
+	span, ok := p.AnchorPanelRoundSpanBlocks()
+	if !ok {
+		return v.AnchorVerdictWindowBlocks
+	}
+	parts := []uint64{v.AnchorVerdictWindowBlocks, span, span, span, v.AnchorPublicationWindowBlocks}
+	if v.AnchorLateWindowBlocks != 0 {
+		parts = append(parts, v.AnchorLateWindowBlocks, span)
+	}
+	total, ok := sumUint64(parts...)
+	if !ok {
+		return v.AnchorVerdictWindowBlocks
+	}
+	return total
+}
+
+// AnchorAuditLifeBlocks is AnchorTotalWindowBlocks with the verdict window an
+// audit of this body really has (AnchorEffectiveVerdictWindowBlocks): the
+// bound the task retention must exceed.
+func (p TaskParamsV1) AnchorAuditLifeBlocks() uint64 {
+	total, ok := sumUint64(p.Verification.AnchorTotalWindowBlocks()-p.Verification.AnchorVerdictWindowBlocks, p.AnchorEffectiveVerdictWindowBlocks())
+	if !ok {
+		return ^uint64(0)
+	}
+	return total
+}
+
+func sumUint64(values ...uint64) (uint64, bool) {
+	var total uint64
+	for _, value := range values {
+		next := total + value
+		if next < total {
+			return 0, false
+		}
+		total = next
+	}
+	return total, true
 }
 
 func (v VerificationParamsV1) anchorOneStepWindowBlocks() uint64 {

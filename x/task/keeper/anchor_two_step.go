@@ -133,14 +133,16 @@ func (k Keeper) anchorSamplingModeOf(ctx context.Context, taskKey types.TaskKey)
 // restarted beacon window): a list recorded in the very last block of the list
 // window still has it in full, so the Worker's choice of height cannot leave
 // the draw without room, and no window of the Worker is shortened by it.
-func anchorTwoStepSelection(state *types.AnchorAuditState, v types.VerificationParamsV1, height uint64) bool {
+func anchorTwoStepSelection(state *types.AnchorAuditState, params types.TaskParamsV1, height uint64) bool {
+	v := params.Verification
 	listWindow, beaconBlocks := v.AnchorTwoStepWindows()
 	listDeadline, o1 := checkedHeightAdd(height, listWindow)
 	drawBound, o2 := checkedHeightAdd(listDeadline, beaconBlocks)
 	drawBound, o6 := checkedHeightAdd(drawBound, types.AnchorPositionDrawGraceBlocks)
 	openBound, o3 := checkedHeightAdd(drawBound, v.AnchorOpenWindowBlocks)
 	proofBound, o4 := checkedHeightAdd(openBound, v.AnchorProofWindowBlocks)
-	verdictDeadline, o5 := checkedHeightAdd(proofBound, v.AnchorVerdictWindowBlocks)
+	// With a Verifier panel the verdict takes longer than a validator vote.
+	verdictDeadline, o5 := checkedHeightAdd(proofBound, params.AnchorEffectiveVerdictWindowBlocks())
 	if o1 || o2 || o3 || o4 || o5 || o6 {
 		return false
 	}
@@ -447,6 +449,10 @@ func (k Keeper) finalizeAnchorSamplingOutcome(ctx context.Context, taskKey types
 	state.TaskVerdict = verdict
 	state.ResultSource = types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_TIMEOUT
 	state.ResultReason = truncateAnchorReason(reason)
+	if isAnchorPanelAudit(state) {
+		// A panel audit that ends before any panel was asked is final here.
+		state.FinalHeight = height
+	}
 	if err := k.AnchorAudit.Set(ctx, taskKey, state); err != nil {
 		return err
 	}
@@ -509,7 +515,7 @@ func (k Keeper) drawAnchorPositions(ctx context.Context, taskKey types.TaskKey, 
 	}
 	v := params.Verification
 	remaining, o1 := checkedHeightAdd(v.AnchorOpenWindowBlocks, v.AnchorProofWindowBlocks)
-	remaining, o2 := checkedHeightAdd(remaining, v.AnchorVerdictWindowBlocks)
+	remaining, o2 := checkedHeightAdd(remaining, params.AnchorEffectiveVerdictWindowBlocks())
 	fits := func(drawHeight uint64) bool {
 		end, overflow := checkedHeightAdd(drawHeight, remaining)
 		return !o1 && !o2 && !overflow && end <= state.VerdictDeadlineHeight
@@ -572,6 +578,13 @@ func (k Keeper) drawAnchorPositions(ctx context.Context, taskKey types.TaskKey, 
 	}
 	if err := k.clearAnchorSamplingDue(ctx, taskKey); err != nil {
 		return err
+	}
+	if isAnchorPanelAudit(state) && v.AnchorLateWindowBlocks != 0 {
+		// The Worker's deadlines exist from here; with late submission the
+		// panel sweep watches them, as it does for a one-step audit.
+		if err := k.setAnchorPanelDue(ctx, taskKey, state.OpeningDeadlineHeight+1); err != nil {
+			return err
+		}
 	}
 	return emitTypedEvent(ctx, &types.EventAnchorPositionsDrawn{
 		TaskId: append([]byte(nil), state.TaskId...), Positions: append([]uint64(nil), state.Positions...),

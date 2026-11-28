@@ -514,7 +514,7 @@ func TestLateStateSurvivesExportAndImport(t *testing.T) {
 // window and the round a late submission opens.
 func TestVerdictDeadlineCoversTheLateWindow(t *testing.T) {
 	f := newAnchorLateFixture(t, 4_000, 6)
-	span, ok := anchorPanelSelectionSpanBlocks(f.params)
+	span, ok := f.params.AnchorPanelRoundSpanBlocks()
 	require.True(t, ok)
 	want := f.audit.ProofDeadlineHeight + f.params.Verification.AnchorVerdictWindowBlocks + 4*span + panelPublication + lateWindow
 	require.Equal(t, want, f.audit.VerdictDeadlineHeight)

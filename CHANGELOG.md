@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Verifier-panel audit of two-step tasks; one upgrade for the series.**
+  - A task of a two-step Profile (anchor commitment schema version 2) may be
+    audited by a Verifier panel. The verdict deadline written at selection
+    covers the list window, the beacon heights, the draw grace, the Worker's
+    windows and the panel schedule (rounds, publication, late window). With
+    late submission the Worker's opening and proof deadlines are watched from
+    the position draw.
+  - A missing commitment list has no late form: one block after the list
+    deadline the audit ends as the existing timeout (the task fails, the
+    `anchor_timeout` fault, no pause, no late window, no batch forfeiture).
+  - The task retention bound (`cleanup.task_terminal_summary_retention_blocks`
+    above the life of an audit) counts the panel schedule when
+    `anchor_audit_mode = 2`; under the validator vote it is unchanged.
+  - Panel assignments carry the Profile's registration hash. A dispatch
+    record that names a Worker paused for a late submission is refused like
+    any paused Worker. While the per-model brake withholds a rejection's
+    slash, the forfeiture of the Worker's batch waits with it: the batch is
+    marked and not paid; a release that applies forfeits it, a release that
+    discards lets it be paid. A Worker's open obligations include an audit
+    waiting for a late submission and a batch that is not paid or forfeited.
+  - One upgrade plan, `v0.6.4-two-step-sampling`, carries the whole series:
+    task 4 -> 5 and hub 3 -> 4, both committing the parameter bodies again.
+    The separate plan name `v0.6.3-verifier-panel` is gone.
 - **Upgrade `v0.6.3-verifier-panel`.** The governance plan of this name
   activates the binary that carries the Verifier-panel audit. The task module
   goes to consensus version 5 and the hub module to 4. The task and service
