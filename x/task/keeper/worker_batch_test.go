@@ -491,3 +491,15 @@ func TestRecordedDispatchJoinsTheWorkerBatch(t *testing.T) {
 		require.Equal(t, uint32(1), response.Batch.OpenTaskCount)
 	}
 }
+
+// A member task whose batch row is gone is not held for anything: its Worker
+// is credited by the task's own settlement, as a task outside any batch is.
+func TestMemberWithoutItsBatchRowIsPaidAtOnce(t *testing.T) {
+	f := newBatchFixture(t, 4_000, 6)
+	require.NoError(t, f.keeper.WorkerBatch.Remove(f.ctx, collections.Join(types.AddrKey(f.raw), uint64(0))))
+	_, settlement := f.passAndSettle(t)
+	f.requireAuditedPaid(t, settlement)
+	require.Equal(t, batchWorkerNet, f.credited(f.worker))
+	require.Zero(t, f.transfers(shared.TaskEscrowModuleName, shared.TaskChallengeEffectModuleName))
+	require.Empty(t, *f.faults)
+}
