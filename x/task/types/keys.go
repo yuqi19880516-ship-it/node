@@ -184,6 +184,8 @@ var (
 	WorkerLateIndexKey                     = MustVersionedStorePrefix("worker_late_index", CurrentStoreSchemaVersion)
 	AnchorBrakeKey                         = MustVersionedStorePrefix("anchor_brake", CurrentStoreSchemaVersion)
 	AnchorBrakePendingKey                  = MustVersionedStorePrefix("anchor_brake_pending", CurrentStoreSchemaVersion)
+	AnchorSamplingDueIndexKey              = MustVersionedStorePrefix("anchor_sampling_due_index", CurrentStoreSchemaVersion)
+	AnchorSamplingDueHeightKey             = MustVersionedStorePrefix("anchor_sampling_due_height", CurrentStoreSchemaVersion)
 	VerifierCandidateWindowKey             = MustVersionedStorePrefix("verifier_candidate_window", CurrentStoreSchemaVersion)
 	VerifierCandidateEligibilitySegmentKey = MustVersionedStorePrefix("verifier_candidate_eligibility_segment", CurrentStoreSchemaVersion)
 	VerifierCandidateWindowMemberKey       = MustVersionedStorePrefix("verifier_candidate_window_member", CurrentStoreSchemaVersion)

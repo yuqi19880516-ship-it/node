@@ -37,3 +37,12 @@ type BankKeeper interface {
 	SendCoinsFromModuleToAccount(context.Context, string, sdk.AccAddress, sdk.Coins) error
 	SendCoinsFromModuleToModule(context.Context, string, string, sdk.Coins) error
 }
+
+// BeaconVRFRequirement is the Hub fact two-step anchor sampling reads when a
+// position draw finds no usable beacons: whether the chain requires the
+// proposer-VRF beacon at a height (beacon.vrf_required_from_height is set and
+// reached). The Hub keeper implements it; the Task keeper reads it through its
+// HubKeeper, without making it part of that interface.
+type BeaconVRFRequirement interface {
+	BeaconSentinelRequiredAtHeight(ctx context.Context, height uint64) (bool, error)
+}

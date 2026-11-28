@@ -149,8 +149,13 @@ type Keeper struct {
 	WorkerBatchQueue          collections.KeySet[collections.Triple[uint64, types.AddrKey, uint64]]
 	// AnchorBrake is the per-model, per-period REJECT statistic; AnchorBrakePending
 	// holds the Worker slashes withheld while a brake is tripped, by task.
-	AnchorBrake                         collections.Map[collections.Pair[types.Hash32Key, uint64], types.AnchorBrakeState]
-	AnchorBrakePending                  collections.Map[collections.Triple[types.Hash32Key, uint64, types.Hash32Key], internaltypes.AnchorBrakePendingEffect]
+	AnchorBrake        collections.Map[collections.Pair[types.Hash32Key, uint64], types.AnchorBrakeState]
+	AnchorBrakePending collections.Map[collections.Triple[types.Hash32Key, uint64, types.Hash32Key], internaltypes.AnchorBrakePendingEffect]
+	// AnchorSamplingDueIndex is the EndBlock queue of two-step anchor audits
+	// (one row per open audit: its list deadline, then its position draw);
+	// AnchorSamplingDueHeight names that row by task.
+	AnchorSamplingDueIndex              collections.KeySet[types.DeadlineIndexKey]
+	AnchorSamplingDueHeight             collections.Map[types.TaskKey, uint64]
 	VerifierCandidateWindow             collections.Map[types.VerifyRoundKey, types.VerifierCandidateWindowState]
 	VerifierCandidateEligibilitySegment collections.Map[types.VerifyRoundSegmentKey, types.VerifierCandidateEligibilitySegmentState]
 	VerifierCandidateWindowMember       collections.Map[types.VerifyRoundSegmentKey, internaltypes.VerifierWindowMemberStoreState]
@@ -353,6 +358,8 @@ func NewKeeper(storeService corestore.KVStoreService, transientStoreService core
 		WorkerBatchQueue:                    collections.NewKeySet(sb, types.WorkerBatchQueueKey, "worker_batch_queue", collections.TripleKeyCodec(collections.Uint64Key, types.AddrKeyCodec, collections.Uint64Key)),
 		AnchorBrake:                         collections.NewMap(sb, types.AnchorBrakeKey, "anchor_brake", collections.PairKeyCodec(types.Hash32KeyCodec, collections.Uint64Key), codec.CollValue[types.AnchorBrakeState](cdc)),
 		AnchorBrakePending:                  collections.NewMap(sb, types.AnchorBrakePendingKey, "anchor_brake_pending", collections.TripleKeyCodec(types.Hash32KeyCodec, collections.Uint64Key, types.Hash32KeyCodec), codec.CollValue[internaltypes.AnchorBrakePendingEffect](cdc)),
+		AnchorSamplingDueIndex:              collections.NewKeySet(sb, types.AnchorSamplingDueIndexKey, "anchor_sampling_due_index", deadlineKeyCodec),
+		AnchorSamplingDueHeight:             collections.NewMap(sb, types.AnchorSamplingDueHeightKey, "anchor_sampling_due_height", types.Hash32KeyCodec, collections.Uint64Value),
 		VerifierCandidateWindow:             collections.NewMap(sb, types.VerifierCandidateWindowKey, "verifier_candidate_window", verifyRoundKeyCodec, codec.CollValue[types.VerifierCandidateWindowState](cdc)),
 		VerifierCandidateEligibilitySegment: collections.NewMap(sb, types.VerifierCandidateEligibilitySegmentKey, "verifier_candidate_eligibility_segment", verifyRoundSegmentKeyCodec, codec.CollValue[types.VerifierCandidateEligibilitySegmentState](cdc)),
 		VerifierCandidateWindowMember:       collections.NewMap(sb, types.VerifierCandidateWindowMemberKey, "verifier_candidate_window_member", verifyRoundSegmentKeyCodec, codec.CollValue[internaltypes.VerifierWindowMemberStoreState](cdc)),

@@ -1305,6 +1305,11 @@ func (k Keeper) initGenesisAnchor(ctx context.Context, genesis types.GenesisStat
 		if err := k.rebuildAnchorPanelIndexes(ctx, taskID, state); err != nil {
 			return err
 		}
+		// The sampling queue is derived state: an imported two-step audit that
+		// still waits for its list or its draw gets its row back.
+		if err := k.rebuildAnchorSamplingDue(ctx, taskID, state); err != nil {
+			return err
+		}
 	}
 	if err := k.rebuildWorkerBatchIndexes(ctx, genesis); err != nil {
 		return err

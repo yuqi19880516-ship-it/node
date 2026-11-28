@@ -40,11 +40,11 @@ func TestVerifierPanelUpgradeRecommitsParameterBodies(t *testing.T) {
 	require.NoError(t, app.UpgradeKeeper.SetModuleVersionMap(ctx, versions))
 
 	upgradeHeight := app.LastBlockHeight() + 1
-	scheduleUpgrade(t, app, VerifierPanelUpgradeName, upgradeHeight)
+	scheduleUpgrade(t, app, TwoStepSamplingUpgradeName, upgradeHeight)
 	require.Equal(t, upgradeHeight, advanceBlock(t, app, valHash))
 
 	ctx = upgradeCtx(app)
-	done, err := app.UpgradeKeeper.GetDoneHeight(ctx, VerifierPanelUpgradeName)
+	done, err := app.UpgradeKeeper.GetDoneHeight(ctx, TwoStepSamplingUpgradeName)
 	require.NoError(t, err)
 	require.Equal(t, upgradeHeight, done)
 	versions, err = app.UpgradeKeeper.GetModuleVersionMap(ctx)
@@ -80,7 +80,7 @@ func TestVerifierPanelUpgradeRecommitsParameterBodies(t *testing.T) {
 	// The chain keeps producing blocks, and a second run changes nothing.
 	advanceBlock(t, app, valHash)
 	ctx = upgradeCtx(app)
-	require.NoError(t, app.TaskKeeper.RecommitParams(ctx))
+	require.NoError(t, app.TaskKeeper.RecommitTaskParams(ctx))
 	require.NoError(t, app.HubKeeper.RecommitParams(ctx))
 	taskMeta, err = app.TaskKeeper.GetTaskParamsMeta(ctx)
 	require.NoError(t, err)

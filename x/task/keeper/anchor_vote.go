@@ -105,6 +105,14 @@ func anchorQuorum(power, total uint64) bool {
 // (anchorMaterialUnavailable).
 func anchorTimeoutVerdict(state types.AnchorAuditState) (types.AnchorVerdictV1, string) {
 	switch {
+	case isAnchorTwoStep(state) && !anchorListRecorded(state):
+		// Two-step sampling: the selected Worker recorded no commitment list.
+		// The same omission as a missing opening, settled as the same fault.
+		return types.AnchorVerdictV1_ANCHOR_VERDICT_V1_REJECT, anchorListMissingReason
+	case isAnchorTwoStep(state) && len(state.Positions) == 0:
+		// The list is recorded and the chain drew no positions: the chain's
+		// omission, never the Worker's fault.
+		return types.AnchorVerdictV1_ANCHOR_VERDICT_V1_NO_VERDICT, anchorPositionsMissingReson
 	case len(state.Positions) == 0:
 		// Nothing was sampled, so there was nothing to open: never the Worker's fault.
 		return types.AnchorVerdictV1_ANCHOR_VERDICT_V1_NO_VERDICT, "no rows were sampled for this audit"
@@ -115,6 +123,15 @@ func anchorTimeoutVerdict(state types.AnchorAuditState) (types.AnchorVerdictV1, 
 	default:
 		return types.AnchorVerdictV1_ANCHOR_VERDICT_V1_NO_VERDICT, "validators did not reach two thirds of the voting power within the voting window"
 	}
+}
+
+// anchorMissingListOutcome reports whether a final audit ended on the missing
+// commitment list of a two-step task: the outcome the EndBlock queue records
+// one block after the list deadline (and settlement at its own height).
+func anchorMissingListOutcome(state types.AnchorAuditState) bool {
+	return isAnchorTwoStep(state) && !anchorListRecorded(state) && state.ResultHeight != 0 &&
+		state.TaskVerdict == types.AnchorVerdictV1_ANCHOR_VERDICT_V1_REJECT &&
+		state.ResultSource == types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_TIMEOUT
 }
 
 func emitAnchorVerdictEvent(ctx context.Context, state types.AnchorAuditState) error {
@@ -146,7 +163,31 @@ func (k Keeper) anchorSettlementView(ctx context.Context, taskKey types.TaskKey,
 		return nil, nil
 	}
 	deadline := anchorVerdictDeadline(state)
+	// A missing commitment list is the two-step counterpart of a missing
+	// opening and is settled at the same moments. On a PASS round it decides
+	// the task as soon as it is established (the list deadline has passed; the
+	// one-step task waits for its verdict deadline only because an opening
+	// could still arrive). On a round that did not pass, the Worker is not
+	// paid either way and settlement does not wait for the audit: the omission
+	// is applied only by a settlement at or after the verdict deadline,
+	// exactly like a missing opening. Without this a two-step Worker took the
+	// timeout fault from the block after the list deadline, long before its
+	// one-step counterpart would.
+	omissionNotDue := roundVerdict != types.TaskVerdict_TASK_VERDICT_PASS && height < deadline
 	if state.ResultHeight != 0 {
+		if omissionNotDue && anchorMissingListOutcome(state) {
+			// Recorded by the EndBlock queue one block after the list deadline.
+			return nil, nil
+		}
+		return &state, nil
+	}
+	if anchorListDeadlinePassed(state, height) && !omissionNotDue {
+		// Two-step sampling: no list was accepted and none can be any more. The
+		// EndBlock queue records this outcome one block after the list deadline;
+		// settlement reads the same outcome here when that visit has not happened
+		// yet, so it never depends on the queue.
+		state.TaskVerdict, state.ResultReason = anchorTimeoutVerdict(state)
+		state.ResultSource = types.AnchorResultSourceV1_ANCHOR_RESULT_SOURCE_V1_TIMEOUT
 		return &state, nil
 	}
 	if isAnchorPanelAudit(state) {
@@ -681,6 +722,12 @@ func (k Keeper) cleanupAnchorAudit(ctx context.Context, taskKey types.TaskKey) (
 	if deleted, err := deleteFirstMapRow(ctx, k.AnchorValidatorVote,
 		collections.NewPrefixedPairRange[types.TaskKey, []byte](taskKey)); err != nil || deleted {
 		return boolCount(deleted), err
+	}
+	// The sampling queue row of a two-step audit goes with the audit.
+	if queued, err := k.AnchorSamplingDueHeight.Has(ctx, taskKey); err != nil {
+		return 0, err
+	} else if queued {
+		return 1, k.clearAnchorSamplingDue(ctx, taskKey)
 	}
 	if len(state.WorkerFaultId) != types.Hash32Len {
 		if err := k.AnchorAudit.Remove(ctx, taskKey); err != nil {
